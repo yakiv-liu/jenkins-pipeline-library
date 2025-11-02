@@ -2,11 +2,13 @@ package org.yakiv
 
 class SecurityTools implements Serializable {
     def steps
-    
-    SecurityTools(steps = null) {
-        this.steps = steps ?: new hudson.model.Build(steps)
+    def env
+
+    SecurityTools(steps, env) {
+        this.steps = steps
+        this.env = env
     }
-    
+
     def sonarScan(Map config) {
         steps.withSonarQubeEnv('sonarqube') {
             steps.sh """
@@ -19,14 +21,13 @@ class SecurityTools implements Serializable {
             """
         }
     }
-    
+
     def dependencyCheck() {
         steps.sh 'mvn org.owasp:dependency-check-maven:check -DskipTests'
         steps.sh 'mvn spotbugs:spotbugs -DskipTests'
     }
-    
+
     def runPRSecurityScan(Map config) {
-        // PR专用的安全扫描方法
         steps.withSonarQubeEnv('sonarqube') {
             steps.sh """
                 mvn sonar:sonar \

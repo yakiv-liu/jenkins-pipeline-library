@@ -1,6 +1,6 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
-    
+
     pipeline {
         agent {
             label config.agentLabel
@@ -8,16 +8,16 @@ def call(Map userConfig = [:]) {
 
         triggers {
             githubPullRequest(
-                org: config.org,
-                repo: config.repo,
-                branch: config.defaultBranch ?: 'main',
-                triggerPhrase: '.*test.*',
-                onlyTriggerPhrase: false,
-                githubApiUrl: 'https://api.github.com',
-                successComment: 'PR验证通过，可以合并',
-                failureComment: 'PR验证失败，请检查构建日志',
-                skipFirstBuild: false,
-                cancelBuildsOnUpdate: true
+                    org: config.org,
+                    repo: config.repo,
+                    branch: config.defaultBranch ?: 'main',
+                    triggerPhrase: '.*test.*',
+                    onlyTriggerPhrase: false,
+                    githubApiUrl: 'https://api.github.com',
+                    successComment: 'PR验证通过，可以合并',
+                    failureComment: 'PR验证失败，请检查构建日志',
+                    skipFirstBuild: false,
+                    cancelBuildsOnUpdate: true
             )
         }
 
@@ -37,17 +37,17 @@ def call(Map userConfig = [:]) {
             stage('Checkout PR') {
                 steps {
                     checkout([
-                        $class: 'GitSCM',
-                        branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
-                        extensions: [
-                            [$class: 'CleanCheckout'],
-                            [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
-                        ],
-                        userRemoteConfigs: [[
-                            refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
-                            url: "https://github.com/${config.org}/${config.repo}.git",
-                            credentialsId: 'github-token'
-                        ]]
+                            $class: 'GitSCM',
+                            branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
+                            extensions: [
+                                    [$class: 'CleanCheckout'],
+                                    [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
+                            ],
+                            userRemoteConfigs: [[
+                                                        refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
+                                                        url: "https://github.com/${config.org}/${config.repo}.git",
+                                                        credentialsId: 'github-token'
+                                                ]]
                     ])
 
                     dir('src') {
@@ -62,12 +62,13 @@ def call(Map userConfig = [:]) {
                         steps {
                             dir('src') {
                                 script {
-                                    def securityTools = new org.yakiv.SecurityTools()
+                                    // 修正：正确传递 steps 和 env
+                                    def securityTools = new org.yakiv.SecurityTools(steps, env)
                                     securityTools.runPRSecurityScan(
-                                        projectName: config.projectName,
-                                        changeId: env.CHANGE_ID,
-                                        changeBranch: env.CHANGE_BRANCH,
-                                        changeTarget: env.CHANGE_TARGET
+                                            projectName: config.projectName,
+                                            changeId: env.CHANGE_ID,
+                                            changeBranch: env.CHANGE_BRANCH,
+                                            changeTarget: env.CHANGE_TARGET
                                     )
                                 }
                             }
@@ -76,20 +77,20 @@ def call(Map userConfig = [:]) {
                             success {
                                 script {
                                     updateGitHubCommitStatus(
-                                        state: 'SUCCESS',
-                                        context: 'security-scan',
-                                        description: '安全扫描通过',
-                                        targetUrl: "${env.BUILD_URL}"
+                                            state: 'SUCCESS',
+                                            context: 'security-scan',
+                                            description: '安全扫描通过',
+                                            targetUrl: "${env.BUILD_URL}"
                                     )
                                 }
                             }
                             failure {
                                 script {
                                     updateGitHubCommitStatus(
-                                        state: 'FAILURE',
-                                        context: 'security-scan',
-                                        description: '安全扫描失败',
-                                        targetUrl: "${env.BUILD_URL}"
+                                            state: 'FAILURE',
+                                            context: 'security-scan',
+                                            description: '安全扫描失败',
+                                            targetUrl: "${env.BUILD_URL}"
                                     )
                                 }
                             }
@@ -100,7 +101,8 @@ def call(Map userConfig = [:]) {
                         steps {
                             dir('src') {
                                 script {
-                                    def buildTools = new org.yakiv.BuildTools()
+                                    // 修正：正确传递 steps 和 env
+                                    def buildTools = new org.yakiv.BuildTools(steps, env)
                                     buildTools.runPRBuildAndTest()
                                 }
                             }
@@ -109,30 +111,30 @@ def call(Map userConfig = [:]) {
                             success {
                                 script {
                                     updateGitHubCommitStatus(
-                                        state: 'SUCCESS',
-                                        context: 'build',
-                                        description: '构建测试通过',
-                                        targetUrl: "${env.BUILD_URL}"
+                                            state: 'SUCCESS',
+                                            context: 'build',
+                                            description: '构建测试通过',
+                                            targetUrl: "${env.BUILD_URL}"
                                     )
 
                                     junit 'src/target/surefire-reports/*.xml'
                                     publishHTML([
-                                        allowMissing: false,
-                                        alwaysLinkToLastBuild: true,
-                                        keepAll: true,
-                                        reportDir: 'src/target/site',
-                                        reportFiles: 'surefire-report.html,jacoco/index.html',
-                                        reportName: '测试报告'
+                                            allowMissing: false,
+                                            alwaysLinkToLastBuild: true,
+                                            keepAll: true,
+                                            reportDir: 'src/target/site',
+                                            reportFiles: 'surefire-report.html,jacoco/index.html',
+                                            reportName: '测试报告'
                                     ])
                                 }
                             }
                             failure {
                                 script {
                                     updateGitHubCommitStatus(
-                                        state: 'FAILURE',
-                                        context: 'build',
-                                        description: '构建测试失败',
-                                        targetUrl: "${env.BUILD_URL}"
+                                            state: 'FAILURE',
+                                            context: 'build',
+                                            description: '构建测试失败',
+                                            targetUrl: "${env.BUILD_URL}"
                                     )
                                 }
                             }
@@ -158,20 +160,20 @@ def call(Map userConfig = [:]) {
                     success {
                         script {
                             updateGitHubCommitStatus(
-                                state: 'SUCCESS',
-                                context: 'quality-gate',
-                                description: '质量门检查通过',
-                                targetUrl: "${env.BUILD_URL}"
+                                    state: 'SUCCESS',
+                                    context: 'quality-gate',
+                                    description: '质量门检查通过',
+                                    targetUrl: "${env.BUILD_URL}"
                             )
                         }
                     }
                     failure {
                         script {
                             updateGitHubCommitStatus(
-                                state: 'FAILURE',
-                                context: 'quality-gate',
-                                description: '质量门检查失败',
-                                targetUrl: "${env.BUILD_URL}"
+                                    state: 'FAILURE',
+                                    context: 'quality-gate',
+                                    description: '质量门检查失败',
+                                    targetUrl: "${env.BUILD_URL}"
                             )
                         }
                     }

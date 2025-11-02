@@ -1,51 +1,17 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
-    
+
     pipeline {
-        // 不指定具体agent，由项目自定义或使用默认any
         agent {
             label config.agentLabel
         }
-        
-        parameters {
-            string(
-                name: 'PROJECT_NAME',
-                defaultValue: config.projectName ?: 'myapp',
-                description: '项目名称'
-            )
-            choice(
-                name: 'DEPLOY_ENV',
-                choices: config.environments,
-                description: '选择部署环境'
-            )
-            booleanParam(
-                name: 'ROLLBACK',
-                defaultValue: false,
-                description: '是否执行回滚'
-            )
-            string(
-                name: 'ROLLBACK_VERSION',
-                defaultValue: '',
-                description: '回滚版本号（格式: timestamp或tag）'
-            )
-            booleanParam(
-                name: 'IS_RELEASE',
-                defaultValue: false,
-                description: '是否为正式发布版本'
-            )
-            string(
-                name: 'EMAIL_RECIPIENTS',
-                defaultValue: config.defaultEmail,
-                description: '邮件接收人（多个用逗号分隔）'
-            )
-        }
-        
+
         options {
             timeout(time: 60, unit: 'MINUTES')
             buildDiscarder(logRotator(numToKeepStr: '20'))
             disableConcurrentBuilds()
         }
-        
+
         environment {
             // 使用集中配置
             NEXUS_URL = config.nexusUrl
@@ -53,93 +19,104 @@ def call(Map userConfig = [:]) {
             SONAR_URL = config.sonarUrl
             TRIVY_URL = config.trivyUrl
             BACKUP_DIR = config.backupDir
-            
+
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-            VERSION_SUFFIX = "${params.IS_RELEASE ? '' : '-SNAPSHOT'}"
+            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
             APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+
+            // 从配置中获取参数值
+            PROJECT_NAME = config.projectName
+            DEPLOY_ENV = config.deployEnv
+            IS_RELEASE = config.isRelease
+            ROLLBACK = config.rollback
+            ROLLBACK_VERSION = config.rollbackVersion
+            EMAIL_RECIPIENTS = config.defaultEmail
         }
-        
+
         stages {
             stage('Initialize & Validation') {
                 steps {
                     script {
                         // 参数验证
-                        if (params.ROLLBACK && !params.ROLLBACK_VERSION) {
+                        if (env.ROLLBACK.toBoolean() && !env.ROLLBACK_VERSION) {
                             error "回滚操作必须指定回滚版本号"
                         }
-                        
-                        if (params.ROLLBACK && params.DEPLOY_ENV == 'prod') {
-                            input message: "确认在生产环境执行回滚?\n回滚版本: ${params.ROLLBACK_VERSION}",
-                            ok: '确认回滚',
-                            submitterParameter: 'ROLLBACK_APPROVER'
+
+                        if (env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod') {
+                            input message: "确认在生产环境执行回滚?\n回滚版本: ${env.ROLLBACK_VERSION}",
+                                    ok: '确认回滚',
+                                    submitterParameter: 'ROLLBACK_APPROVER'
                         }
-                        
-                        currentBuild.displayName = "${params.PROJECT_NAME}-${APP_VERSION}-${params.DEPLOY_ENV}"
+
+                        currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-${env.DEPLOY_ENV}"
                     }
                 }
             }
-            
+
             stage('Checkout & Setup') {
                 steps {
                     checkout scm
                     script {
+                        // 使用Groovy获取ISO格式时间戳
+                        def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+
                         // 创建部署清单
                         writeJSON file: 'deployment-manifest.json', json: [
-                            project: params.PROJECT_NAME,
-                            version: APP_VERSION,
-                            environment: params.DEPLOY_ENV,
-                            git_commit: GIT_COMMIT,
-                            build_time: sh(script: 'date -Iseconds', returnStdout: true).trim(),
-                            build_url: env.BUILD_URL,
-                            is_release: params.IS_RELEASE,
-                            rollback_enabled: true
+                                project: env.PROJECT_NAME,
+                                version: env.APP_VERSION,
+                                environment: env.DEPLOY_ENV,
+                                git_commit: env.GIT_COMMIT,
+                                build_time: buildTime,
+                                build_url: env.BUILD_URL,
+                                is_release: env.IS_RELEASE.toBoolean(),
+                                rollback_enabled: true
                         ]
                     }
                 }
             }
-            
+
             stage('Build & Security Scan') {
                 when {
-                    expression { !params.ROLLBACK }
+                    expression { !env.ROLLBACK.toBoolean() }
                 }
                 parallel {
                     stage('Build') {
                         steps {
                             script {
-                                def buildTools = new org.yakiv.BuildTools()
+                                def buildTools = new org.yakiv.BuildTools(steps, env)
                                 buildTools.mavenBuild(
-                                    version: APP_VERSION,
-                                    isRelease: params.IS_RELEASE
+                                        version: env.APP_VERSION,
+                                        isRelease: env.IS_RELEASE.toBoolean()
                                 )
-                                
+
                                 buildTools.buildDockerImage(
-                                    projectName: params.PROJECT_NAME,
-                                    version: APP_VERSION,
-                                    gitCommit: GIT_COMMIT
+                                        projectName: env.PROJECT_NAME,
+                                        version: env.APP_VERSION,
+                                        gitCommit: env.GIT_COMMIT
                                 )
-                                
+
                                 buildTools.trivyScan(
-                                    image: "${HARBOR_URL}/${params.PROJECT_NAME}:${APP_VERSION}"
+                                        image: "${env.HARBOR_URL}/${env.PROJECT_NAME}:${env.APP_VERSION}"
                                 )
-                                
+
                                 buildTools.pushDockerImage(
-                                    projectName: params.PROJECT_NAME,
-                                    version: APP_VERSION,
-                                    harborUrl: HARBOR_URL
+                                        projectName: env.PROJECT_NAME,
+                                        version: env.APP_VERSION,
+                                        harborUrl: env.HARBOR_URL
                                 )
                             }
                         }
                     }
-                    
+
                     stage('Security Scan') {
                         steps {
                             script {
-                                def securityTools = new org.yakiv.SecurityTools()
+                                def securityTools = new org.yakiv.SecurityTools(steps, env)
                                 securityTools.sonarScan(
-                                    projectKey: "${params.PROJECT_NAME}-${APP_VERSION}",
-                                    projectName: "${params.PROJECT_NAME} ${APP_VERSION}"
+                                        projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
+                                        projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}"
                                 )
                                 securityTools.dependencyCheck()
                             }
@@ -147,10 +124,10 @@ def call(Map userConfig = [:]) {
                     }
                 }
             }
-            
+
             stage('Quality Gate') {
                 when {
-                    expression { !params.ROLLBACK }
+                    expression { !env.ROLLBACK.toBoolean() }
                 }
                 steps {
                     script {
@@ -163,107 +140,113 @@ def call(Map userConfig = [:]) {
                     }
                 }
             }
-            
+
             stage('Deploy') {
                 when {
-                    expression { 
-                        !params.ROLLBACK && 
-                        (params.DEPLOY_ENV == 'staging' || params.DEPLOY_ENV == 'pre-prod' || params.DEPLOY_ENV == 'prod')
+                    expression {
+                        !env.ROLLBACK.toBoolean() &&
+                                (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod')
                     }
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools()
-                        
-                        if (params.DEPLOY_ENV == 'pre-prod' || params.DEPLOY_ENV == 'prod') {
-                            input message: "确认部署到${params.DEPLOY_ENV}环境?\n项目: ${params.PROJECT_NAME}\n版本: ${APP_VERSION}",
-                            ok: '确认部署',
-                            submitterParameter: 'APPROVER'
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
+
+                        if (env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') {
+                            input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}",
+                                    ok: '确认部署',
+                                    submitterParameter: 'APPROVER'
                         }
-                        
+
                         deployTools.deployToEnvironment(
-                            projectName: params.PROJECT_NAME,
-                            environment: params.DEPLOY_ENV,
-                            version: APP_VERSION,
-                            harborUrl: HARBOR_URL
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.APP_VERSION,
+                                harborUrl: env.HARBOR_URL
                         )
-                        
-                        // 记录部署
-                        sh """
-                            echo "${APP_VERSION}" > ${BACKUP_DIR}/${params.PROJECT_NAME}-${params.DEPLOY_ENV}.version
-                            echo "${APP_VERSION},${GIT_COMMIT},$(date -Iseconds),${params.DEPLOY_ENV},${env.BUILD_URL}" >> ${BACKUP_DIR}/${params.PROJECT_NAME}-deployments.log
-                        """
+
+                        // 记录部署 - 修正时间戳获取方式
+                        script {
+                            def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log",
+                                    text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
+                                    append: true
+                        }
                     }
                 }
             }
-            
+
             stage('Rollback') {
                 when {
-                    expression { params.ROLLBACK }
+                    expression { env.ROLLBACK.toBoolean() }
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools()
-                        
-                        echo "执行回滚操作，项目: ${params.PROJECT_NAME}, 环境: ${params.DEPLOY_ENV}, 版本: ${params.ROLLBACK_VERSION}"
-                        
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
+
+                        echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
+
                         deployTools.executeRollback(
-                            projectName: params.PROJECT_NAME,
-                            environment: params.DEPLOY_ENV,
-                            version: params.ROLLBACK_VERSION,
-                            harborUrl: HARBOR_URL
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.ROLLBACK_VERSION,
+                                harborUrl: env.HARBOR_URL
                         )
-                        
-                        // 记录回滚
-                        sh """
-                            echo "${params.ROLLBACK_VERSION}" > ${BACKUP_DIR}/${params.PROJECT_NAME}-${params.DEPLOY_ENV}.version
-                            echo "${params.ROLLBACK_VERSION},${params.DEPLOY_ENV},rollback,$(date -Iseconds),${env.BUILD_URL}" >> ${BACKUP_DIR}/${params.PROJECT_NAME}-rollbacks.log
-                        """
+
+                        // 记录回滚 - 修正时间戳获取方式
+                        script {
+                            def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log",
+                                    text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
+                                    append: true
+                        }
                     }
                 }
             }
-            
+
             stage('Post-Deployment Test') {
                 when {
-                    expression { !params.ROLLBACK && params.DEPLOY_ENV == 'prod' }
+                    expression { !env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod' }
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools()
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
                         deployTools.healthCheck(
-                            environment: params.DEPLOY_ENV,
-                            projectName: params.PROJECT_NAME,
-                            version: APP_VERSION
+                                environment: env.DEPLOY_ENV,
+                                projectName: env.PROJECT_NAME,
+                                version: env.APP_VERSION
                         )
                     }
                 }
             }
         }
-        
+
         post {
             always {
                 script {
-                    def notificationTools = new org.yakiv.NotificationTools()
+                    def notificationTools = new org.yakiv.NotificationTools(steps)
                     notificationTools.sendPipelineNotification(
-                        project: params.PROJECT_NAME,
-                        environment: params.DEPLOY_ENV,
-                        version: params.ROLLBACK ? params.ROLLBACK_VERSION : APP_VERSION,
-                        status: currentBuild.result,
-                        recipients: params.EMAIL_RECIPIENTS,
-                        buildUrl: env.BUILD_URL,
-                        isRollback: params.ROLLBACK
+                            project: env.PROJECT_NAME,
+                            environment: env.DEPLOY_ENV,
+                            version: env.ROLLBACK.toBoolean() ? env.ROLLBACK_VERSION : env.APP_VERSION,
+                            status: currentBuild.result,
+                            recipients: env.EMAIL_RECIPIENTS,
+                            buildUrl: env.BUILD_URL,
+                            isRollback: env.ROLLBACK.toBoolean()
                     )
-                    
+
                     archiveArtifacts artifacts: 'deployment-manifest.json,trivy-report.html', fingerprint: true
                     publishHTML([
-                        allowMissing: false,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: '.',
-                        reportFiles: 'trivy-report.html',
-                        reportName: '安全扫描报告'
+                            allowMissing: false,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: '.',
+                            reportFiles: 'trivy-report.html',
+                            reportName: '安全扫描报告'
                     ])
-                    
+
                     cleanWs()
                 }
             }
