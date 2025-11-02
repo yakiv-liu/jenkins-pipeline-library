@@ -1,0 +1,20 @@
+# 默认基础设施配置
+infrastructure:
+  nexus:
+    url: "http://192.168.233.8:8081"
+  harbor:
+    url: "192.168.233.9:8083"
+  sonar:
+    url: "http://192.168.233.8:9000"
+  trivy:
+    url: "http://192.168.233.9:8084"
+  backup:
+    dir: "/opt/backups"
+
+# 默认项目配置
+defaults:
+  project: "demo-helloworld"
+  email: "251934304@qq.com"
+  environments: ["staging", "pre-prod", "prod"]
+  agent: "any"
+  branch: "main"
