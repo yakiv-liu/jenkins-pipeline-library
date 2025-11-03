@@ -15,32 +15,32 @@ def call(Map userConfig = [:]) {
         }
 
         environment {
-            // 使用集中配置
-            NEXUS_URL = configLoader.getNexusUrl()
-            HARBOR_URL = configLoader.getHarborUrl()
-            SONAR_URL = configLoader.getSonarUrl()
-            TRIVY_URL = configLoader.getTrivyUrl()
-            BACKUP_DIR = configLoader.getBackupDir()
+            // 使用集中配置 - 通过 configLoader 方法获取
+            NEXUS_URL = "${configLoader.getNexusUrl()}"
+            HARBOR_URL = "${configLoader.getHarborUrl()}"
+            SONAR_URL = "${configLoader.getSonarUrl()}"
+            TRIVY_URL = "${configLoader.getTrivyUrl()}"
+            BACKUP_DIR = "${configLoader.getBackupDir()}"
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
             VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
             APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-
-            // 从配置中获取参数值
-            PROJECT_NAME = config.projectName
-            DEPLOY_ENV = config.deployEnv
-            IS_RELEASE = config.isRelease
-            ROLLBACK = config.rollback
-            ROLLBACK_VERSION = config.rollbackVersion
-            EMAIL_RECIPIENTS = config.defaultEmail
         }
 
         stages {
             stage('Initialize & Validation') {
                 steps {
                     script {
+                        // 设置不能在 environment 块中直接设置的环境变量
+                        env.PROJECT_NAME = config.projectName
+                        env.DEPLOY_ENV = config.deployEnv
+                        env.IS_RELEASE = config.isRelease.toString()
+                        env.ROLLBACK = config.rollback.toString()
+                        env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
+                        env.EMAIL_RECIPIENTS = config.defaultEmail
+
                         // 参数验证
                         if (env.ROLLBACK.toBoolean() && !env.ROLLBACK_VERSION) {
                             error "回滚操作必须指定回滚版本号"
@@ -64,7 +64,6 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // 其他阶段保持不变...
             stage('Checkout & Setup') {
                 steps {
                     checkout scm
