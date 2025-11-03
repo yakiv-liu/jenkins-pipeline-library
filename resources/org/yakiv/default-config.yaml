@@ -1,4 +1,4 @@
-# 默认基础设施配置
+# 基础设施配置
 infrastructure:
   nexus:
     url: "http://192.168.233.8:8081"
@@ -11,10 +11,23 @@ infrastructure:
   backup:
     dir: "/opt/backups"
 
+# 环境主机配置
+environments:
+  staging:
+    host: "192.168.233.8"
+  pre-prod:
+    host: "192.168.233.9"
+  prod:
+    host: "192.168.233.7"
+
 # 默认项目配置
 defaults:
   project: "demo-helloworld"
   email: "251934304@qq.com"
-  environments: ["staging", "pre-prod", "prod"]
+  environments:
+    - "staging"
+    - "pre-prod"
+    - "prod"
   agent: "any"
   branch: "main"
+  appPort: 8080

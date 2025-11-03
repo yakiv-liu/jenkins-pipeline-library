@@ -1,5 +1,7 @@
 def call(Map userConfig = [:]) {
-    def config = org.yakiv.Config.mergeConfig(userConfig)
+    // 初始化配置加载器
+    def configLoader = new org.yakiv.Config(steps)
+    def config = configLoader.mergeConfig(userConfig)
 
     pipeline {
         agent {
@@ -14,11 +16,11 @@ def call(Map userConfig = [:]) {
 
         environment {
             // 使用集中配置
-            NEXUS_URL = config.nexusUrl
-            HARBOR_URL = config.harborUrl
-            SONAR_URL = config.sonarUrl
-            TRIVY_URL = config.trivyUrl
-            BACKUP_DIR = config.backupDir
+            NEXUS_URL = configLoader.getNexusUrl()
+            HARBOR_URL = configLoader.getHarborUrl()
+            SONAR_URL = configLoader.getSonarUrl()
+            TRIVY_URL = configLoader.getTrivyUrl()
+            BACKUP_DIR = configLoader.getBackupDir()
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
@@ -51,18 +53,23 @@ def call(Map userConfig = [:]) {
                         }
 
                         currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-${env.DEPLOY_ENV}"
+
+                        // 显示配置信息
+                        echo "项目: ${env.PROJECT_NAME}"
+                        echo "环境: ${env.DEPLOY_ENV}"
+                        echo "版本: ${env.APP_VERSION}"
+                        echo "端口: ${configLoader.getAppPort(config)}"
+                        echo "目标主机: ${configLoader.getEnvironmentHost(config, env.DEPLOY_ENV)}"
                     }
                 }
             }
 
+            // 其他阶段保持不变...
             stage('Checkout & Setup') {
                 steps {
                     checkout scm
                     script {
-                        // 使用Groovy获取ISO格式时间戳
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-
-                        // 创建部署清单
                         writeJSON file: 'deployment-manifest.json', json: [
                                 project: env.PROJECT_NAME,
                                 version: env.APP_VERSION,
@@ -162,10 +169,11 @@ def call(Map userConfig = [:]) {
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
                                 version: env.APP_VERSION,
-                                harborUrl: env.HARBOR_URL
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
                         )
 
-                        // 记录部署 - 修正时间戳获取方式
                         script {
                             def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                             writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
@@ -191,10 +199,11 @@ def call(Map userConfig = [:]) {
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
                                 version: env.ROLLBACK_VERSION,
-                                harborUrl: env.HARBOR_URL
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
                         )
 
-                        // 记录回滚 - 修正时间戳获取方式
                         script {
                             def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                             writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
@@ -216,7 +225,9 @@ def call(Map userConfig = [:]) {
                         deployTools.healthCheck(
                                 environment: env.DEPLOY_ENV,
                                 projectName: env.PROJECT_NAME,
-                                version: env.APP_VERSION
+                                version: env.APP_VERSION,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
                         )
                     }
                 }

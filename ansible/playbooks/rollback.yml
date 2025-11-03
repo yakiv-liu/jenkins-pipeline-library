@@ -1,0 +1,54 @@
+---
+- name: 执行应用回滚
+  hosts: all
+  vars:
+    app_name: "{{ project_name }}"  # 使用变量而不是硬编码
+
+  tasks:
+    - name: 验证回滚版本是否存在
+      docker_image:
+        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+        source: local
+      register: image_check
+      ignore_errors: yes
+
+    - name: 拉取回滚版本（如果本地不存在）
+      when: image_check is failed
+      docker_image:
+        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+        source: pull
+
+    - name: 停止当前容器
+      docker_container:
+        name: "{{ app_name }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: 启动回滚版本
+      docker_container:
+        name: "{{ app_name }}"
+        image: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ app_port }}:8080"  # 使用变量端口
+        env:
+          SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+
+    - name: 验证回滚成功
+      uri:
+        url: "http://localhost:{{ app_port }}/health"  # 使用变量端口
+        return_content: yes
+        status_code: 200
+      register: rollback_health
+      until: rollback_health.status == 200
+      retries: 10
+      delay: 5
+
+    - name: 记录回滚信息
+      debug:
+        msg: |
+          回滚完成！
+          环境: {{ deploy_env }}
+          回滚版本: {{ rollback_version }}
+          状态: 成功
