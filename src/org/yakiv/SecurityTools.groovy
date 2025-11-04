@@ -10,63 +10,51 @@ class SecurityTools implements Serializable {
     }
 
     def sonarScan(Map config) {
-        // ========== 修改开始：添加 Config File Provider 和凭据管理 ==========
-        steps.withCredentials([
-                steps.usernamePassword(
-                        credentialsId: 'nexus-credentials',  // 新增：Nexus 凭据
-                        usernameVariable: 'NEXUS_USERNAME',
-                        passwordVariable: 'NEXUS_PASSWORD'
-                )
-        ]) {
-            steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                steps.withSonarQubeEnv('sonarqube') {
+        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+            steps.withSonarQubeEnv('sonarqube') {
+                // 确保在项目目录中执行
+                steps.dir(env.WORKSPACE) {
                     steps.sh """
+                        echo "=== 执行 SonarQube 扫描前的目录检查 ==="
+                        echo "当前目录: \$(pwd)"
+                        echo "文件列表:"
+                        ls -la
+                        echo "检查 pom.xml:"
+                        ls -la pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
+                        echo "=== 开始 SonarQube 扫描 ==="
+                        
                         mvn sonar:sonar \
                         -Dsonar.projectKey=${config.projectKey} \
                         -Dsonar.projectName='${config.projectName}' \
                         -Dsonar.sources=src/main/java \
                         -Dsonar.tests=src/test/java \
                         -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                        -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                        -s \$MAVEN_SETTINGS
                     """
                 }
             }
         }
-        // ========== 修改结束 ==========
     }
 
     def dependencyCheck() {
-        // ========== 修改开始：添加 Config File Provider 和凭据管理 ==========
-        steps.withCredentials([
-                steps.usernamePassword(
-                        credentialsId: 'nexus-credentials',  // 新增：Nexus 凭据
-                        usernameVariable: 'NEXUS_USERNAME',
-                        passwordVariable: 'NEXUS_PASSWORD'
-                )
-        ]) {
-            steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+            // 确保在项目目录中执行
+            steps.dir(env.WORKSPACE) {
                 steps.sh """
-                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \$MAVEN_SETTINGS
                 """
                 steps.sh """
-                    mvn spotbugs:spotbugs -DskipTests -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                    mvn spotbugs:spotbugs -DskipTests -s \$MAVEN_SETTINGS
                 """
             }
         }
-        // ========== 修改结束 ==========
     }
 
     def runPRSecurityScan(Map config) {
-        // ========== 修改开始：添加 Config File Provider 和凭据管理 ==========
-        steps.withCredentials([
-                steps.usernamePassword(
-                        credentialsId: 'nexus-credentials',  // 新增：Nexus 凭据
-                        usernameVariable: 'NEXUS_USERNAME',
-                        passwordVariable: 'NEXUS_PASSWORD'
-                )
-        ]) {
-            steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                steps.withSonarQubeEnv('sonarqube') {
+        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+            steps.withSonarQubeEnv('sonarqube') {
+                // 确保在项目目录中执行
+                steps.dir(env.WORKSPACE) {
                     steps.sh """
                         mvn sonar:sonar \
                         -Dsonar.projectKey=${config.projectName}-pr-${config.changeId} \
@@ -77,19 +65,21 @@ class SecurityTools implements Serializable {
                         -Dsonar.sources=src/main/java \
                         -Dsonar.tests=src/test/java \
                         -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                        -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                        -s \$MAVEN_SETTINGS
                     """
                 }
+            }
 
+            // 确保在项目目录中执行
+            steps.dir(env.WORKSPACE) {
                 steps.sh """
-                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \$MAVEN_SETTINGS
                 """
                 steps.sh """
-                    mvn spotbugs:spotbugs -DskipTests -s \$MAVEN_SETTINGS  # 新增：使用 Jenkins 管理的 settings.xml
+                    mvn spotbugs:spotbugs -DskipTests -s \$MAVEN_SETTINGS
                 """
                 steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif .'
             }
         }
-        // ========== 修改结束 ==========
     }
 }
