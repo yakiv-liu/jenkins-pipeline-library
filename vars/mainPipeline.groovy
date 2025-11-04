@@ -140,7 +140,7 @@ def call(Map userConfig = [:]) {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
                 }
-                parallel {
+                stages {
                     stage('Build') {
                         steps {
                             script {
