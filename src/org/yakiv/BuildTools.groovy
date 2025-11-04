@@ -10,12 +10,22 @@ class BuildTools implements Serializable {
     }
 
     def mavenBuild(Map config) {
-        steps.sh """
-            mvn -s settings.xml clean deploy \
-            -Drevision=${config.version} \
-            -DskipTests=false \
-            ${config.isRelease ? '-P release' : '-P snapshot'}
-        """
+        steps.withCredentials([
+                steps.usernamePassword(
+                        credentialsId: 'nexus-credentials',
+                        usernameVariable: 'NEXUS_USERNAME',
+                        passwordVariable: 'NEXUS_PASSWORD'
+                )
+        ]) {
+            steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+                steps.sh """
+                    mvn -s $MAVEN_SETTINGS clean deploy \
+                        '-Drevision=${config.version}' \
+                        '-DskipTests=${config.skipTests ?: false}' \
+                        -P ${config.isRelease ? 'release' : 'snapshot'}
+                """
+            }
+        }
     }
 
     def buildDockerImage(Map config) {
