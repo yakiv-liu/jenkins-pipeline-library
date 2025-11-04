@@ -37,6 +37,7 @@ def call(Map userConfig = [:]) {
                     script {
                         // 设置不能在 environment 块中直接设置的环境变量
                         env.PROJECT_NAME = config.projectName
+                        env.PROJECT_REPO_URL = config.projectRepoUrl  // 新增：项目仓库 URL
                         env.DEPLOY_ENV = config.deployEnv
                         env.IS_RELEASE = config.isRelease.toString()
                         env.ROLLBACK = config.rollback.toString()
@@ -60,6 +61,7 @@ def call(Map userConfig = [:]) {
                         echo "项目: ${env.PROJECT_NAME}"
                         echo "环境: ${env.DEPLOY_ENV}"
                         echo "版本: ${env.APP_VERSION}"
+                        echo "项目仓库: ${env.PROJECT_REPO_URL}"  // 新增：显示仓库 URL
                         echo "端口: ${configLoader.getAppPort(config)}"
                         echo "目标主机: ${configLoader.getEnvironmentHost(config, env.DEPLOY_ENV)}"
                     }
@@ -73,8 +75,13 @@ def call(Map userConfig = [:]) {
 
                     // 2. 额外检出实际的项目代码
                     script {
-                        // 定义实际项目代码的仓库 URL
-                        def projectRepoUrl = "git@github.com:yakiv-liu/${env.PROJECT_NAME}.git"
+                        // 使用配置的项目仓库 URL
+                        def projectRepoUrl = env.PROJECT_REPO_URL
+
+                        echo "开始检出项目代码..."
+                        echo "仓库 URL: ${projectRepoUrl}"
+                        echo "凭据 ID: github-ssh-key-slave"
+                        echo "目标目录: ${env.PROJECT_NAME}"
 
                         // 检出实际项目代码到项目名目录
                         checkout([
@@ -88,7 +95,7 @@ def call(Map userConfig = [:]) {
                                 ],
                                 userRemoteConfigs: [[
                                                             url: projectRepoUrl,
-                                                            credentialsId: 'your-github-credentials'  // 请使用你 Jenkins 中配置的凭据 ID
+                                                            credentialsId: 'github-ssh-key-slave'  // 使用正确的 SSH 凭据 ID
                                                     ]]
                         ])
 
@@ -106,6 +113,17 @@ def call(Map userConfig = [:]) {
                                 is_release: env.IS_RELEASE.toBoolean(),
                                 rollback_enabled: true
                         ]
+
+                        // 验证目录结构
+                        sh """
+                            echo "=== 工作空间结构 ==="
+                            echo "当前目录: \$(pwd)"
+                            ls -la
+                            echo "=== 实际项目代码目录 ==="
+                            ls -la ${env.PROJECT_DIR}/
+                            echo "=== 检查 pom.xml ==="
+                            ls -la ${env.PROJECT_DIR}/pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
+                        """
                     }
                 }
             }
