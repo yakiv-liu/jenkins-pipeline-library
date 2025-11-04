@@ -25,10 +25,11 @@ class BuildTools implements Serializable {
                     echo "执行 Maven 部署，版本: ${config.version}"
                     echo "是否为发布版本: ${config.isRelease}"
                     
-                    # 移除了 -P 参数，Maven 会根据版本号自动选择仓库
+                    # 使用内存优化的测试配置
                     mvn -s \$MAVEN_SETTINGS clean deploy \
                         '-Drevision=${config.version}' \
-                        '-DskipTests=${config.skipTests ?: false}'
+                        -Dmaven.test.forkCount=1 \
+                        -DargLine="-Xmx256m -XX:MaxPermSize=128m"
                 """
                 }
             }
