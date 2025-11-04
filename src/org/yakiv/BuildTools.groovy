@@ -18,13 +18,17 @@ class BuildTools implements Serializable {
                 )
         ]) {
             steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                // 切换到实际项目代码目录
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
+                    export MAVEN_OPTS="-Xmx512m -Xms256m -XX:MaxMetaspaceSize=256m"
+                    
+                    echo "执行 Maven 部署，版本: ${config.version}"
+                    echo "是否为发布版本: ${config.isRelease}"
+                    
+                    # 移除了 -P 参数，Maven 会根据版本号自动选择仓库
                     mvn -s \$MAVEN_SETTINGS clean deploy \
                         '-Drevision=${config.version}' \
-                        '-DskipTests=${config.skipTests ?: false}' \
-                        -P ${config.isRelease ? 'release' : 'snapshot'}
+                        '-DskipTests=${config.skipTests ?: false}'
                 """
                 }
             }
