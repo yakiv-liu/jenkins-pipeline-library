@@ -27,6 +27,8 @@ def call(Map userConfig = [:]) {
             VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
             APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            // 添加项目目录环境变量
+            PROJECT_DIR = "${config.projectName}"  // 如 'demo-helloworld'
         }
 
         stages {
