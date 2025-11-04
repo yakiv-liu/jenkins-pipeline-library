@@ -12,7 +12,7 @@ class SecurityTools implements Serializable {
     def sonarScan(Map config) {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.withSonarQubeEnv('sonarqube') {
-                // 使用环境变量动态确定项目目录
+                // 在实际项目代码目录执行扫描
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
                     echo "=== 执行 SonarQube 扫描前的目录检查 ==="

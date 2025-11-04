@@ -18,7 +18,7 @@ class BuildTools implements Serializable {
                 )
         ]) {
             steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                // 切换到项目目录
+                // 切换到实际项目代码目录
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
                     mvn -s \$MAVEN_SETTINGS clean deploy \
@@ -32,7 +32,7 @@ class BuildTools implements Serializable {
     }
 
     def buildDockerImage(Map config) {
-        // 切换到项目目录构建 Docker 镜像
+        // 在实际项目代码目录构建 Docker 镜像
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             steps.sh """
             docker build \

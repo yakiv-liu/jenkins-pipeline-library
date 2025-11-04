@@ -68,8 +68,33 @@ def call(Map userConfig = [:]) {
 
             stage('Checkout & Setup') {
                 steps {
+                    // 1. 检出 Pipeline 脚本的 SCM (已经由 Jenkins 自动完成)
                     checkout scm
+
+                    // 2. 额外检出实际的项目代码
                     script {
+                        // 定义实际项目代码的仓库 URL
+                        def projectRepoUrl = "git@github.com:yakiv-liu/${env.PROJECT_NAME}.git"
+
+                        // 检出实际项目代码到项目名目录
+                        checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: '*/main']],  // 根据你的实际分支调整
+                                extensions: [
+                                        [
+                                                $class: 'RelativeTargetDirectory',
+                                                relativeTargetDir: env.PROJECT_NAME
+                                        ]
+                                ],
+                                userRemoteConfigs: [[
+                                                            url: projectRepoUrl,
+                                                            credentialsId: 'your-github-credentials'  // 请使用你 Jenkins 中配置的凭据 ID
+                                                    ]]
+                        ])
+
+                        // 设置项目目录环境变量
+                        env.PROJECT_DIR = env.PROJECT_NAME
+
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                         writeJSON file: 'deployment-manifest.json', json: [
                                 project: env.PROJECT_NAME,
