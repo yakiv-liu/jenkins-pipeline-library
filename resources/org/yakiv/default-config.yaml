@@ -29,5 +29,5 @@ defaults:
     - "pre-prod"
     - "prod"
   agent: "any"
-  branch: "main"
+  branch: "master"
   appPort: 8080
