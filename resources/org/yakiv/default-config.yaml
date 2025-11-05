@@ -3,7 +3,7 @@ infrastructure:
   nexus:
     url: "http://192.168.233.8:8081"
   harbor:
-    url: "192.168.233.9:8083"
+    url: "192.168.233.9:80/mlp"
   sonar:
     url: "http://192.168.233.8:9000"
   trivy:
