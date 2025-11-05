@@ -37,16 +37,31 @@ class BuildTools implements Serializable {
     }
 
     def buildDockerImage(Map config) {
-        // 在实际项目代码目录构建 Docker 镜像
-        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+        // 在项目根目录执行构建
+        steps.dir("${env.WORKSPACE}") {
             steps.sh """
-            docker build \
-            --build-arg PROJECT_NAME=${config.projectName} \
-            --build-arg APP_VERSION=${config.version} \
-            --build-arg GIT_COMMIT=${config.gitCommit} \
-            -t ${env.HARBOR_URL}/${config.projectName}:${config.version} \
-            -t ${env.HARBOR_URL}/${config.projectName}:latest \
-            .
+            echo "=== 在项目根目录执行 Docker 构建 ==="
+            echo "当前目录: \$(pwd)"
+            echo "目录内容:"
+            ls -la
+            echo "项目目录内容:"
+            ls -la ${env.PROJECT_DIR}/
+            
+            # 检查 Dockerfile 位置
+            if [ -f "${env.PROJECT_DIR}/Dockerfile" ]; then
+                echo "Dockerfile 存在于项目目录中"
+                # 在项目根目录构建，但指定 Dockerfile 路径
+                docker build \
+                --file ${env.PROJECT_DIR}/Dockerfile \
+                --build-arg PROJECT_NAME=${config.projectName} \
+                --build-arg APP_VERSION=${config.version} \
+                --build-arg GIT_COMMIT=${config.gitCommit} \
+                -t ${env.HARBOR_URL}/${config.projectName}:${config.version} \
+                -t ${env.HARBOR_URL}/${config.projectName}:latest \
+                ${env.PROJECT_DIR}
+            else
+                echo "❌ Dockerfile 不存在于项目目录中"
+            fi
         """
         }
     }
