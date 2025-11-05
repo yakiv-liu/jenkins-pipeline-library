@@ -10,22 +10,25 @@ class SecurityTools implements Serializable {
     }
 
     def sonarScan(Map config) {
-        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-            steps.withSonarQubeEnv('sonarqube') {
+        steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+            steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
                     echo "=== 清理 Maven 缓存 ==="
-                    # 清理项目中的 Maven 缓存
                     rm -rf target/surefire-reports
                     rm -rf target/site
                     
-                    echo "=== 执行 SonarQube 扫描 ==="
+                    echo "=== 执行 SonarQube 扫描（使用 sonar-token 凭据）==="
                     echo "当前目录: \$(pwd)"
+                    echo "SonarQube 服务器: ${env.SONAR_URL}"
                     
-                    # 设置更大的栈内存和堆内存
+                    # 设置内存
                     export MAVEN_OPTS="-Xmx1024m -Xms512m -Xss4m -XX:MaxMetaspaceSize=512m"
                     
+                    # 使用显式令牌认证
                     mvn sonar:sonar \
+                    -Dsonar.host.url=${env.SONAR_URL} \
+                    -Dsonar.login=\${SONAR_TOKEN} \
                     -Dsonar.projectKey=${config.projectKey} \
                     -Dsonar.projectName='${config.projectName}' \
                     -Dsonar.sources=src/main/java \
@@ -33,6 +36,8 @@ class SecurityTools implements Serializable {
                     -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
                     -s \$MAVEN_SETTINGS \
                     -Dsonar.verbose=true
+                    
+                    echo "✅ SonarQube 扫描完成"
                 """
                 }
             }
