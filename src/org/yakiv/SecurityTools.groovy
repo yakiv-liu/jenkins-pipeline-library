@@ -31,6 +31,7 @@ class SecurityTools implements Serializable {
                     -Dsonar.login=\${SONAR_TOKEN} \
                     -Dsonar.projectKey=${config.projectKey} \
                     -Dsonar.projectName='${config.projectName}' \
+                    -Dsonar.branch.name=${config.branch} \
                     -Dsonar.sources=src/main/java \
                     -Dsonar.tests=src/test/java \
                     -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \

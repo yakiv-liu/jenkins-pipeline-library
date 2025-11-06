@@ -175,7 +175,8 @@ def call(Map userConfig = [:]) {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
                                 securityTools.sonarScan(
                                         projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
-                                        projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}"
+                                        projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
+                                        branch: "${env.PROJECT_BRANCH}"
                                 )
                                 securityTools.dependencyCheck()
                             }
