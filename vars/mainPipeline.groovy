@@ -40,8 +40,8 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_NAME = config.projectName
                         env.PROJECT_REPO_URL = config.projectRepoUrl
 
-                        // 设置项目分支，如果没有提供则使用默认值 'master'
-                        env.PROJECT_BRANCH = config.projectBranch ?: 'master'
+                        // 设置项目分支，如果没有提供则使用默认值 'main'
+                        env.PROJECT_BRANCH = config.projectBranch ?: 'main'
 
                         env.DEPLOY_ENV = config.deployEnv
                         env.IS_RELEASE = config.isRelease.toString()
