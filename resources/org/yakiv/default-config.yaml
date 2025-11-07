@@ -5,7 +5,7 @@ infrastructure:
   harbor:
     url: "192.168.233.9:80/mlp"
   sonar:
-    url: "http://192.168.233.8:9000"
+    url: "http://192.168.233.10:9000"
   trivy:
     url: "http://192.168.233.9:8084"
   backup:
