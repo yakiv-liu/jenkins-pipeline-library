@@ -10,7 +10,6 @@ class SecurityTools implements Serializable {
     }
 
     def fastSonarScan(Map config) {
-        // === 修复点：正确使用 withCredentials ===
         steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
             steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
@@ -37,7 +36,7 @@ class SecurityTools implements Serializable {
                             
                             export MAVEN_OPTS="-Xmx512m -Xms256m -XX:+UseG1GC"
                             
-                            # === 修复点：直接使用环境变量，不需要额外转义 ===
+                            # SonarQube 扫描仍然保留 120 秒超时（防止卡住）
                             timeout 120s mvn sonar:sonar \\
                             -Dsonar.host.url=${env.SONAR_URL} \\
                             -Dsonar.login=${env.SONAR_TOKEN} \\
@@ -97,10 +96,11 @@ class SecurityTools implements Serializable {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                 steps.sh """
-                echo "⚡ 开始极速依赖检查 (目标: 2-3分钟)"
+                echo "🔍 开始依赖检查（无超时限制）"
+                echo "注意：首次运行需要下载漏洞数据库，可能需要较长时间（10-30分钟）"
                 
-                timeout 180s bash -c "
-                mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
+                # === 修改点：去掉 timeout 命令 ===
+                mvn org.owasp:dependency-check-maven:check -DskipTests -s \\$MAVEN_SETTINGS \\
                 -DdependencyCheck.format=HTML \\
                 -DdependencyCheck.failBuildOnCVSS=9 \\
                 -DdependencyCheck.analyze.direct=true \\
@@ -124,9 +124,59 @@ class SecurityTools implements Serializable {
                 -DdependencyCheck.nexusAnalyzerEnabled=false \\
                 -DdependencyCheck.artifactoryAnalyzerEnabled=false \\
                 -DdependencyCheck.parallelAnalysis=true
-                "
                 
-                echo "✅ 极速依赖检查完成"
+                echo "✅ 依赖检查完成"
+                """
+            }
+        }
+    }
+
+    // 可选：保留快速版本（使用预下载数据库）
+    def fastDependencyCheckWithCache() {
+        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+            steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                steps.sh """
+                echo "⚡ 开始快速依赖检查（使用缓存）"
+                
+                # 检查预下载数据库
+                if [ -d "/var/jenkins_home/dependency-check-data" ] && [ -f "/var/jenkins_home/dependency-check-data/dc.h2.db" ]; then
+                    echo "✅ 使用预下载的漏洞数据库"
+                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \\$MAVEN_SETTINGS \\
+                    -DdependencyCheck.format=HTML \\
+                    -DdependencyCheck.failBuildOnCVSS=9 \\
+                    -DdependencyCheck.analyze.direct=true \\
+                    -DdependencyCheck.analyze.transitive=false \\
+                    -DdependencyCheck.data.directory=/var/jenkins_home/dependency-check-data \\
+                    -DdependencyCheck.autoUpdate=false \\
+                    -DdependencyCheck.suppressionFile=suppression.xml \\
+                    -DdependencyCheck.scanSet='**/pom.xml' \\
+                    -DdependencyCheck.assemblyAnalyzerEnabled=false \\
+                    -DdependencyCheck.nodeAnalyzerEnabled=false \\
+                    -DdependencyCheck.nodeAuditAnalyzerEnabled=false \\
+                    -DdependencyCheck.nugetconfAnalyzerEnabled=false \\
+                    -DdependencyCheck.nuspecAnalyzerEnabled=false \\
+                    -DdependencyCheck.bundleAuditAnalyzerEnabled=false \\
+                    -DdependencyCheck.composerAnalyzerEnabled=false \\
+                    -DdependencyCheck.pythonAnalyzerEnabled=false \\
+                    -DdependencyCheck.rubygemsAnalyzerEnabled=false \\
+                    -DdependencyCheck.cocoapodsAnalyzerEnabled=false \\
+                    -DdependencyCheck.swiftAnalyzerEnabled=false \\
+                    -DdependencyCheck.centralAnalyzerEnabled=true \\
+                    -DdependencyCheck.nexusAnalyzerEnabled=false \\
+                    -DdependencyCheck.artifactoryAnalyzerEnabled=false \\
+                    -DdependencyCheck.parallelAnalysis=true
+                else
+                    echo "⚠️ 预下载数据库不存在，执行完整扫描"
+                    # 调用完整版本
+                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \\$MAVEN_SETTINGS \\
+                    -DdependencyCheck.format=HTML \\
+                    -DdependencyCheck.failBuildOnCVSS=9 \\
+                    -DdependencyCheck.analyze.direct=true \\
+                    -DdependencyCheck.analyze.transitive=false \\
+                    -DdependencyCheck.suppressionFile=suppression.xml
+                fi
+                
+                echo "✅ 依赖检查完成"
                 """
             }
         }
@@ -138,7 +188,9 @@ class SecurityTools implements Serializable {
     }
 
     def dependencyCheck() {
-        fastDependencyCheck()
+        // 可以选择使用哪个版本
+        fastDependencyCheck()  // 无超时版本
+        // fastDependencyCheckWithCache()  // 使用缓存的快速版本
     }
 
     def runPRSecurityScan(Map config) {
