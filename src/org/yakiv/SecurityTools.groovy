@@ -96,37 +96,37 @@ class SecurityTools implements Serializable {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                 steps.sh """
-                echo "🔍 开始依赖检查（无超时限制）"
-                echo "注意：首次运行需要下载漏洞数据库，可能需要较长时间（10-30分钟）"
-                
-                # === 修改点：去掉 timeout 命令 ===
-                mvn org.owasp:dependency-check-maven:check -DskipTests -s \\$MAVEN_SETTINGS \\
-                -DdependencyCheck.format=HTML \\
-                -DdependencyCheck.failBuildOnCVSS=9 \\
-                -DdependencyCheck.analyze.direct=true \\
-                -DdependencyCheck.analyze.transitive=false \\
-                -DdependencyCheck.cveValidForHours=168 \\
-                -DdependencyCheck.data.directory=/var/jenkins_home/dependency-check-data \\
-                -DdependencyCheck.suppressionFile=suppression.xml \\
-                -DdependencyCheck.scanSet='**/pom.xml' \\
-                -DdependencyCheck.assemblyAnalyzerEnabled=false \\
-                -DdependencyCheck.nodeAnalyzerEnabled=false \\
-                -DdependencyCheck.nodeAuditAnalyzerEnabled=false \\
-                -DdependencyCheck.nugetconfAnalyzerEnabled=false \\
-                -DdependencyCheck.nuspecAnalyzerEnabled=false \\
-                -DdependencyCheck.bundleAuditAnalyzerEnabled=false \\
-                -DdependencyCheck.composerAnalyzerEnabled=false \\
-                -DdependencyCheck.pythonAnalyzerEnabled=false \\
-                -DdependencyCheck.rubygemsAnalyzerEnabled=false \\
-                -DdependencyCheck.cocoapodsAnalyzerEnabled=false \\
-                -DdependencyCheck.swiftAnalyzerEnabled=false \\
-                -DdependencyCheck.centralAnalyzerEnabled=true \\
-                -DdependencyCheck.nexusAnalyzerEnabled=false \\
-                -DdependencyCheck.artifactoryAnalyzerEnabled=false \\
-                -DdependencyCheck.parallelAnalysis=true
-                
-                echo "✅ 依赖检查完成"
-                """
+            echo "🔍 开始依赖检查（无超时限制）"
+            echo "注意：首次运行需要下载漏洞数据库，可能需要较长时间（10-30分钟）"
+            
+            # === 修改点：修正 MAVEN_SETTINGS 引用 ===
+            mvn org.owasp:dependency-check-maven:check -DskipTests -s \"\${MAVEN_SETTINGS}\" \\
+            -DdependencyCheck.format=HTML \\
+            -DdependencyCheck.failBuildOnCVSS=9 \\
+            -DdependencyCheck.analyze.direct=true \\
+            -DdependencyCheck.analyze.transitive=false \\
+            -DdependencyCheck.cveValidForHours=168 \\
+            -DdependencyCheck.data.directory=/var/jenkins_home/dependency-check-data \\
+            -DdependencyCheck.suppressionFile=suppression.xml \\
+            -DdependencyCheck.scanSet='**/pom.xml' \\
+            -DdependencyCheck.assemblyAnalyzerEnabled=false \\
+            -DdependencyCheck.nodeAnalyzerEnabled=false \\
+            -DdependencyCheck.nodeAuditAnalyzerEnabled=false \\
+            -DdependencyCheck.nugetconfAnalyzerEnabled=false \\
+            -DdependencyCheck.nuspecAnalyzerEnabled=false \\
+            -DdependencyCheck.bundleAuditAnalyzerEnabled=false \\
+            -DdependencyCheck.composerAnalyzerEnabled=false \\
+            -DdependencyCheck.pythonAnalyzerEnabled=false \\
+            -DdependencyCheck.rubygemsAnalyzerEnabled=false \\
+            -DdependencyCheck.cocoapodsAnalyzerEnabled=false \\
+            -DdependencyCheck.swiftAnalyzerEnabled=false \\
+            -DdependencyCheck.centralAnalyzerEnabled=true \\
+            -DdependencyCheck.nexusAnalyzerEnabled=false \\
+            -DdependencyCheck.artifactoryAnalyzerEnabled=false \\
+            -DdependencyCheck.parallelAnalysis=true
+            
+            echo "✅ 依赖检查完成"
+            """
             }
         }
     }
