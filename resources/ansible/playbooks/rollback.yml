@@ -2,7 +2,8 @@
 - name: 执行应用回滚
   hosts: all
   vars:
-    app_name: "{{ project_name }}"  # 使用变量而不是硬编码
+    app_name: "{{ project_name }}"
+    backup_dir: "{{ backup_dir | default('/opt/backups') }}"  # ← 新增：添加备份目录变量
 
   tasks:
     - name: 验证回滚版本是否存在
@@ -11,6 +12,7 @@
         source: local
       register: image_check
       ignore_errors: yes
+      changed_when: false  # ← 新增：检查操作不应触发变更
 
     - name: 拉取回滚版本（如果本地不存在）
       when: image_check is failed
@@ -18,34 +20,84 @@
         name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
         source: pull
 
-    - name: 停止当前容器
-      docker_container:
-        name: "{{ app_name }}"
-        state: absent
-      ignore_errors: yes
+    - name: 验证回滚版本可用性
+      when: image_check is failed
+      docker_image:
+        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+        source: local
+      register: image_check_after_pull
+      failed_when: image_check_after_pull is failed  # ← 新增：确保拉取后镜像可用
 
-    - name: 启动回滚版本
-      docker_container:
-        name: "{{ app_name }}"
-        image: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        state: started
-        restart_policy: always
-        ports:
-          - "{{ app_port }}:8080"  # 使用变量端口
-        env:
-          SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+    - name: 记录回滚操作
+      copy:  # ← 修改：将debug改为copy，持久化记录
+        content: |
+          rollback_time: "{{ ansible_date_time.iso8601 }}"
+          rollback_version: "{{ rollback_version }}"
+          environment: "{{ deploy_env }}"
+          project: "{{ app_name }}"
+        dest: "{{ backup_dir }}/{{ app_name }}-manual-rollback-{{ ansible_date_time.epoch }}.yml"
+      delegate_to: localhost
 
-    - name: 验证回滚成功
-      uri:
-        url: "http://localhost:{{ app_port }}/health"  # 使用变量端口
-        return_content: yes
-        status_code: 200
-      register: rollback_health
-      until: rollback_health.status == 200
-      retries: 10
-      delay: 5
+    - block:  # ← 新增：将核心回滚操作包装在block中
+        - name: 停止当前容器
+          docker_container:
+            name: "{{ app_name }}"
+            state: absent
+          ignore_errors: yes
 
-    - name: 记录回滚信息
+        - name: 启动回滚版本
+          docker_container:
+            name: "{{ app_name }}"
+            image: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+            state: started
+            restart_policy: always
+            ports:
+              - "{{ app_port }}:8080"
+            env:
+              SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+              APP_VERSION: "{{ rollback_version }}"  # ← 新增：设置版本环境变量
+            memory: 512m  # ← 新增：资源限制
+            cpus: 0.5
+
+        - name: 健康检查
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            return_content: yes
+            status_code: 200
+            timeout: 30  # ← 新增：添加超时
+          register: rollback_health
+          until: rollback_health.status == 200
+          retries: 10
+          delay: 5
+
+        - name: 验证版本信息  # ← 新增：验证回滚后的版本
+          uri:
+            url: "http://localhost:{{ app_port }}/info"
+            return_content: yes
+            status_code: 200
+          register: info_result
+          failed_when:
+            - info_result.status != 200
+            - "'{{ rollback_version }}' not in info_result.content"
+
+      rescue:  # ← 新增：添加错误处理
+        - name: 回滚失败处理
+          debug:
+            msg: "回滚操作失败，请手动检查"
+
+        - name: 记录回滚失败
+          copy:
+            content: |
+              rollback_failed_time: "{{ ansible_date_time.iso8601 }}"
+              rollback_version: "{{ rollback_version }}"
+              error: "回滚操作执行失败"
+            dest: "{{ backup_dir }}/{{ app_name }}-rollback-failed-{{ ansible_date_time.epoch }}.yml"
+          delegate_to: localhost
+
+        - fail:  # ← 新增：明确标记任务失败
+            msg: "回滚到版本 {{ rollback_version }} 失败"
+
+    - name: 记录回滚成功信息
       debug:
         msg: |
           回滚完成！

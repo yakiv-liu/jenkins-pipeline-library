@@ -2,7 +2,7 @@
 - name: 部署应用并支持自动回滚
   hosts: all
   vars:
-    app_name: "{{ project_name }}"  # 使用变量而不是硬编码
+    app_name: "{{ project_name }}"
     backup_dir: "{{ backup_dir | default('/opt/backups') }}"
     max_backups: 10
     health_check_timeout: 300
@@ -38,50 +38,113 @@
         name: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
         source: pull
 
-    - name: 停止当前容器
-      docker_container:
-        name: "{{ app_name }}"
-        state: absent
-      ignore_errors: yes
+    - name: 部署新版本
+      block:
+        - name: 停止当前容器
+          docker_container:
+            name: "{{ app_name }}"
+            state: absent
+          ignore_errors: yes
 
-    - name: 启动新容器
-      docker_container:
-        name: "{{ app_name }}"
-        image: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
-        state: started
-        restart_policy: always
-        ports:
-          - "{{ app_port }}:8080"  # 使用变量而不是硬编码端口
-        env:
-          SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
-          JAVA_OPTS: "-Xmx512m -Xms256m -Dapp.version={{ app_version }} -Dapp.env={{ deploy_env }}"
-          APP_VERSION: "{{ app_version }}"
-          GIT_COMMIT: "{{ git_commit | default('unknown') }}"  # 添加默认值
-        memory: 512m
-        cpus: 0.5
+        - name: 启动新容器
+          docker_container:
+            name: "{{ app_name }}"
+            image: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
+            state: started
+            restart_policy: always
+            ports:
+              - "{{ app_port }}:8080"
+            env:
+              SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+              JAVA_OPTS: "-Xmx512m -Xms256m -Dapp.version={{ app_version }} -Dapp.env={{ deploy_env }}"
+              APP_VERSION: "{{ app_version }}"
+              GIT_COMMIT: "{{ git_commit | default('unknown') }}"
+            memory: 512m
+            cpus: 0.5
 
-    - name: 健康检查
-      uri:
-        url: "http://localhost:{{ app_port }}/health"  # 使用变量端口
-        method: GET
-        return_content: yes
-        status_code: 200
-        timeout: 30
-      register: health_result
-      until: health_result.status == 200
-      retries: "{{ (health_check_timeout / health_check_interval) | int }}"
-      delay: "{{ health_check_interval }}"
+        - name: 健康检查
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            method: GET
+            return_content: yes
+            status_code: 200
+            timeout: 30
+          register: health_result
+          until: health_result.status == 200
+          retries: "{{ (health_check_timeout / health_check_interval) | int }}"
+          delay: "{{ health_check_interval }}"
 
-    - name: 验证版本信息
-      uri:
-        url: "http://localhost:{{ app_port }}/info"  # 使用变量端口
-        method: GET
-        return_content: yes
-        status_code: 200
-      register: info_result
-      failed_when:
-        - info_result.status != 200
-        - "'{{ app_version }}' not in info_result.content"
+        - name: 验证版本信息
+          uri:
+            url: "http://localhost:{{ app_port }}/info"
+            method: GET
+            return_content: yes
+            status_code: 200
+          register: info_result
+          failed_when:
+            - info_result.status != 200
+            - "'{{ app_version }}' not in info_result.content"
+
+      rescue:
+        - name: 部署失败 - 执行自动回滚
+          debug:
+            msg: "部署失败，开始执行自动回滚..."
+
+        - name: 停止失败容器
+          docker_container:
+            name: "{{ app_name }}"
+            state: absent
+          ignore_errors: yes
+
+        - name: 查找最新备份版本
+          find:
+            paths: "{{ backup_dir }}"
+            patterns: "{{ app_name }}-backup-*.yml"
+          register: available_backups
+
+        - name: 从备份文件获取回滚版本号
+          when: available_backups.files | length > 0
+          include_vars:
+            file: "{{ (available_backups.files | sort(attribute='mtime') | last).path }}"
+
+        - name: 启动回滚版本
+          when: current_version is defined and current_version.stdout != "none"
+          docker_container:
+            name: "{{ app_name }}"
+            image: "{{ current_version.stdout }}"
+            state: started
+            restart_policy: always
+            ports:
+              - "{{ app_port }}:8080"
+            env:
+              SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+
+        - name: 验证回滚成功
+          when: current_version is defined and current_version.stdout != "none"
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            method: GET
+            return_content: yes
+            status_code: 200
+          register: rollback_health
+          until: rollback_health.status == 200
+          retries: 12
+          delay: 5
+
+        - name: 记录回滚操作
+          copy:
+            content: |
+              rollback_time: "{{ ansible_date_time.iso8601 }}"
+              failed_version: "{{ app_version }}"
+              rollback_version: "{{ current_version.stdout }}"
+              environment: "{{ deploy_env }}"
+              reason: "Deployment failed, auto-rollback triggered"
+            dest: "{{ backup_dir }}/{{ app_name }}-rollback-{{ ansible_date_time.epoch }}.yml"
+          delegate_to: localhost
+
+        - name: 抛出回滚完成异常
+          fail:
+            msg: "部署失败，已自动回滚到上一个稳定版本"
 
     - name: 清理旧备份
       find:
@@ -95,69 +158,3 @@
         path: "{{ item.path }}"
         state: absent
       loop: "{{ backup_files.files | sort(attribute='mtime') | list | slice(0, backup_files.files | length - max_backups) }}"
-
-  rescue:
-    - name: 部署失败 - 执行自动回滚
-      debug:
-        msg: "部署失败，开始执行自动回滚..."
-
-    - name: 停止失败容器
-      docker_container:
-        name: "{{ app_name }}"
-        state: absent
-      ignore_errors: yes
-
-    - name: 查找最新备份版本
-      find:
-        paths: "{{ backup_dir }}"
-        patterns: "{{ app_name }}-backup-*.yml"
-      register: available_backups
-
-    - name: 回滚到上一个版本
-      when: available_backups.files | length > 0
-      set_fact:
-        rollback_version: "{{ (available_backups.files | sort(attribute='mtime') | last).path | basename | regex_replace('.*backup-(\\d+)\\.yml', '\\1') }}"
-
-    - name: 从备份文件获取回滚版本号
-      when: available_backups.files | length > 0
-      include_vars:
-        file: "{{ (available_backups.files | sort(attribute='mtime') | last).path }}"
-
-    - name: 启动回滚版本
-      when: current_version is defined and current_version.stdout != "none"
-      docker_container:
-        name: "{{ app_name }}"
-        image: "{{ current_version.stdout }}"
-        state: started
-        restart_policy: always
-        ports:
-          - "{{ app_port }}:8080"  # 使用变量端口
-        env:
-          SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
-
-    - name: 验证回滚成功
-      when: current_version is defined and current_version.stdout != "none"
-      uri:
-        url: "http://localhost:{{ app_port }}/health"  # 使用变量端口
-        method: GET
-        return_content: yes
-        status_code: 200
-      register: rollback_health
-      until: rollback_health.status == 200
-      retries: 12
-      delay: 5
-
-    - name: 记录回滚操作
-      copy:
-        content: |
-          rollback_time: "{{ ansible_date_time.iso8601 }}"
-          failed_version: "{{ app_version }}"
-          rollback_version: "{{ current_version.stdout }}"
-          environment: "{{ deploy_env }}"
-          reason: "Deployment failed, auto-rollback triggered"
-        dest: "{{ backup_dir }}/{{ app_name }}-rollback-{{ ansible_date_time.epoch }}.yml"
-      delegate_to: localhost
-
-    - name: 抛出回滚完成异常
-      fail:
-        msg: "部署失败，已自动回滚到上一个稳定版本"
