@@ -25,7 +25,7 @@ class DeployTools implements Serializable {
                             app_port: config.appPort,
                             app_dir: getAppDir(config.environment),
                             backup_dir: config.backupDir ?: '/opt/backups',
-                            git_commit: env.GIT_COMMIT
+                            git_commit: env.GIT_COMMIT ?: 'unknown'  // 确保 git_commit 有值
                     ],
                     credentialsId: 'ansible-ssh-key',
                     disableHostKeyChecking: true

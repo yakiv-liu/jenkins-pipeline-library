@@ -32,7 +32,7 @@
       copy:
         content: |
           app_name: {{ app_name }}
-          current_version: "{{ current_version.stdout | regex_search(':(.*)$', '\\1') | default('unknown') }}"
+          current_version: "{{ current_version.stdout | regex_replace('.*:', '') | default('unknown') }}"
           backup_time: "{{ ansible_date_time.iso8601 }}"
           environment: "{{ deploy_env }}"
         dest: "{{ backup_dir }}/{{ app_name }}-backup-{{ ansible_date_time.epoch }}.yml"
