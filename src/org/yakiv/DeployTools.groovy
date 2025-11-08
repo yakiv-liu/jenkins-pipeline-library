@@ -10,58 +10,80 @@ class DeployTools implements Serializable {
     }
 
     def deployToEnvironment(Map config) {
-        // 准备 Ansible 环境
-        prepareAnsibleEnvironment(config.environment, config)
+        // 在项目目录中准备 Ansible 环境
+        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+            prepareAnsibleEnvironment(config.environment, config)
 
-        steps.ansiblePlaybook(
-                playbook: 'ansible-playbooks/deploy-with-rollback.yml',
-                inventory: "inventory/${config.environment}",
-                extraVars: [
-                        project_name: config.projectName,
-                        app_version: config.version,
-                        deploy_env: config.environment,
-                        harbor_url: config.harborUrl,
-                        enable_rollback: true,
-                        app_port: config.appPort,
-                        app_dir: getAppDir(config.environment),
-                        backup_dir: config.backupDir ?: '/opt/backups'
-                ],
-                credentialsId: 'ansible-ssh-key',
-                disableHostKeyChecking: true
-        )
+            steps.ansiblePlaybook(
+                    playbook: 'ansible-playbooks/deploy-with-rollback.yml',
+                    inventory: "inventory/${config.environment}",
+                    extraVars: [
+                            project_name: config.projectName,
+                            app_version: config.version,
+                            deploy_env: config.environment,
+                            harbor_url: config.harborUrl,
+                            enable_rollback: true,
+                            app_port: config.appPort,
+                            app_dir: getAppDir(config.environment),
+                            backup_dir: config.backupDir ?: '/opt/backups'
+                    ],
+                    credentialsId: 'ansible-ssh-key',
+                    disableHostKeyChecking: true
+            )
+        }
     }
 
     def executeRollback(Map config) {
-        // 准备 Ansible 环境
-        prepareAnsibleEnvironment(config.environment, config)
+        // 在项目目录中准备 Ansible 环境
+        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+            prepareAnsibleEnvironment(config.environment, config)
 
-        steps.ansiblePlaybook(
-                playbook: 'ansible-playbooks/rollback.yml',
-                inventory: "inventory/${config.environment}",
-                extraVars: [
-                        project_name: config.projectName,
-                        rollback_version: config.version,
-                        deploy_env: config.environment,
-                        harbor_url: config.harborUrl,
-                        app_port: config.appPort,
-                        app_dir: getAppDir(config.environment),
-                        backup_dir: config.backupDir ?: '/opt/backups'
-                ],
-                credentialsId: 'ansible-ssh-key',
-                disableHostKeyChecking: true
-        )
+            steps.ansiblePlaybook(
+                    playbook: 'ansible-playbooks/rollback.yml',
+                    inventory: "inventory/${config.environment}",
+                    extraVars: [
+                            project_name: config.projectName,
+                            rollback_version: config.version,
+                            deploy_env: config.environment,
+                            harbor_url: config.harborUrl,
+                            app_port: config.appPort,
+                            app_dir: getAppDir(config.environment),
+                            backup_dir: config.backupDir ?: '/opt/backups'
+                    ],
+                    credentialsId: 'ansible-ssh-key',
+                    disableHostKeyChecking: true
+            )
+        }
     }
 
     def prepareAnsibleEnvironment(String environment, Map config) {
+        steps.sh '''
+            echo "当前工作目录: $(pwd)"
+            echo "目录内容:"
+            ls -la
+        '''
+
         steps.sh '''
             mkdir -p ansible-playbooks
             mkdir -p inventory
         '''
 
-        // 复制 playbooks
+        // === 修复点：直接使用项目中的 playbooks ===
         steps.sh """
-            # 复制 playbooks
-            find ${steps.env.WORKSPACE}@libs/jenkins-pipeline-library/ansible/playbooks -name "*.yml" -exec cp {} ansible-playbooks/ \\;
+            echo "复制项目中的 Ansible playbooks..."
+            
+            # 检查项目中的 playbooks 目录
+            if [ -d "ansible/playbooks" ]; then
+                echo "从项目目录复制 playbooks"
+                cp ansible/playbooks/*.yml ansible-playbooks/ || echo "部分文件复制失败"
+                echo "复制完成，ansible-playbooks 内容:"
+                ls -la ansible-playbooks/
+            else
+                echo "错误：项目目录中未找到 ansible/playbooks 目录"
+                echo "当前目录结构:"
+                find . -name "*.yml" -type f | head -20
+                exit 1
+            fi
         """
 
         // 动态生成 inventory 文件
@@ -87,8 +109,9 @@ class DeployTools implements Serializable {
             backup_dir=${config.backupDir ?: '/opt/backups'}
         """
 
-        steps.writeFile file: "inventory/${environment}", text: inventoryContent
-        steps.echo "生成的 ${environment} inventory 文件，目标主机: ${envHost}, 端口: ${appPort}"
+        steps.writeFile file: "inventory/${environment}", text: inventoryContent.trim()
+        steps.echo "生成的 ${environment} inventory 文件:"
+        steps.echo inventoryContent
     }
 
     // 从配置中获取环境主机
@@ -106,13 +129,12 @@ class DeployTools implements Serializable {
             case 'pre-prod':
                 return '192.168.233.9'
             case 'prod':
-                return '192.168.233.7'
+                return '192.168.233.10'
             default:
                 return 'localhost'
         }
     }
 
-    // 其他方法保持不变...
     def setupSSHKey() {
         steps.withCredentials([steps.sshUserPrivateKey(
                 credentialsId: 'ansible-ssh-key',
@@ -122,19 +144,38 @@ class DeployTools implements Serializable {
             steps.sh """
                 cp \$SSH_KEY_FILE /tmp/ansible-key
                 chmod 600 /tmp/ansible-key
-                export ANSIBLE_SSH_ARGS="-o StrictHostKeyChecking=no -i /tmp/ansible-key"
+                echo "SSH 密钥已设置"
             """
         }
     }
 
     def healthCheck(Map config) {
-        def url = getHealthCheckUrl(config.environment, config.projectName, config)
+        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+            def url = getHealthCheckUrl(config.environment, config.projectName, config)
 
-        steps.sh """
-            echo "执行健康检查: ${url}"
-            curl -f ${url}/health || exit 1
-            curl -f ${url}/info | grep \"version\":\"${config.version}\" || exit 1
-        """
+            steps.sh """
+                echo "执行健康检查: ${url}"
+                max_attempts=30
+                attempt=1
+                while [ \$attempt -le \$max_attempts ]; do
+                    if curl -f ${url}/health; then
+                        echo "健康检查通过"
+                        break
+                    else
+                        echo "健康检查尝试 \$attempt/\$max_attempts 失败，等待 10 秒后重试..."
+                        sleep 10
+                        attempt=\$((attempt+1))
+                    fi
+                done
+                if [ \$attempt -gt \$max_attempts ]; then
+                    echo "健康检查失败，已达最大重试次数"
+                    exit 1
+                fi
+                
+                # 验证版本信息
+                curl -f ${url}/info | grep \"version\":\"${config.version}\" || (echo "版本验证失败" && exit 1)
+            """
+        }
     }
 
     private def getHealthCheckUrl(environment, projectName, Map config) {
@@ -143,7 +184,6 @@ class DeployTools implements Serializable {
         return "http://${envHost}:${appPort}"
     }
 
-    // 其他辅助方法...
     private def getAppDir(String environment) {
         switch(environment) {
             case 'staging':
