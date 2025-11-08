@@ -38,13 +38,13 @@
         environment: "{{ deploy_env }}"
         EOF
       args:
-        executable: /bin/bash
+        executable: '/bin/bash'
 
     - name: 拉取新版本镜像
       shell: |
         docker pull "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
       args:
-        executable: /bin/bash
+        executable: '/bin/bash'
 
     - name: 部署新版本
       block:
@@ -70,10 +70,10 @@
             memory: 512m
             cpus: 0.5
 
-        # === 修改点：添加容器状态检查 ===
+        # === 修改点：修复模板冲突，使用单引号和转义 ===
         - name: 检查容器状态
           shell: |
-            docker ps -a --filter "name={{ app_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            docker ps -a --filter "name={{ app_name }}" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
           register: container_status
           failed_when: false
 
@@ -81,34 +81,41 @@
           debug:
             var: container_status.stdout
 
-        - name: 检查容器日志（如果容器退出）
-          when: "'Exited' in container_status.stdout"
+        # === 修改点：添加应用程序启动等待 ===
+        - name: 等待应用程序启动（初次等待）
+          wait_for:
+            delay: 10
+          when: "'Up' in container_status.stdout"
+
+        # === 修改点：改进等待逻辑，先检查容器内进程 ===
+        - name: 检查应用程序进程
           shell: |
-            docker logs "{{ app_name }}" --tail 50
-          register: container_logs
-          failed_when: false
+            # 等待应用程序在容器内启动
+            for i in {1..30}; do
+              if docker exec "{{ app_name }}" ps aux | grep java > /dev/null 2>&1; then
+                echo "应用程序已启动"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "应用程序启动超时"
+            exit 1
+          register: app_process_check
+          failed_when: app_process_check.rc != 0
+          when: "'Up' in container_status.stdout"
 
-        - name: 显示容器日志
-          when: "'Exited' in container_status.stdout"
+        - name: 显示应用程序进程检查结果
           debug:
-            var: container_logs.stdout
+            var: app_process_check.stdout
 
-        - name: 检查容器进程
-          shell: |
-            docker top "{{ app_name }}" || echo "容器未运行"
-          register: container_processes
-          failed_when: false
-
-        - name: 显示容器进程
-          debug:
-            var: container_processes.stdout
-
-        - name: 等待容器启动
+        # === 修改点：改进端口等待逻辑 ===
+        - name: 等待容器端口可用
           wait_for:
             port: "{{ app_port }}"
             host: "{{ target_host }}"
             delay: 5
-            timeout: 120  # === 修改点：增加超时时间 ===
+            timeout: 120  # 增加超时时间到2分钟
+            state: started
 
         - name: 健康检查
           uri:
@@ -116,7 +123,7 @@
             method: GET
             return_content: yes
             status_code: 200
-            timeout: 120
+            timeout: 30
           register: health_result
           until: health_result.status == 200
           retries: "{{ (health_check_timeout / health_check_interval) | int }}"
@@ -138,7 +145,6 @@
           debug:
             msg: "部署失败，开始执行自动回滚..."
 
-        # === 修改点：添加详细的错误诊断 ===
         - name: 收集容器诊断信息
           block:
             - name: 检查最终容器状态
@@ -151,30 +157,35 @@
               debug:
                 var: final_container_status.stdout
 
-            - name: 获取容器退出日志
+            - name: 获取容器日志
               shell: |
                 docker logs "{{ app_name }}" --tail 100 || echo "无法获取日志"
               register: final_container_logs
               failed_when: false
 
-            - name: 显示容器退出日志
+            - name: 显示容器日志
               debug:
                 var: final_container_logs.stdout
 
-            - name: 检查系统资源
+            - name: 检查容器内进程
               shell: |
-                echo "=== 内存使用 ==="
-                free -h
-                echo "=== 磁盘空间 ==="
-                df -h
-                echo "=== Docker 系统信息 ==="
-                docker system df
-              register: system_info
+                docker exec "{{ app_name }}" ps aux || echo "无法执行进程检查"
+              register: container_processes
               failed_when: false
 
-            - name: 显示系统信息
+            - name: 显示容器进程
               debug:
-                var: system_info.stdout
+                var: container_processes.stdout
+
+            - name: 检查端口监听
+              shell: |
+                netstat -tuln | grep "{{ app_port }}" || ss -tuln | grep "{{ app_port }}" || echo "端口未监听"
+              register: port_listening
+              failed_when: false
+
+            - name: 显示端口监听状态
+              debug:
+                var: port_listening.stdout
 
           rescue:
             - name: 诊断信息收集失败
@@ -239,7 +250,7 @@
             reason: "Deployment failed, auto-rollback triggered"
             EOF
           args:
-            executable: /bin/bash
+            executable: '/bin/bash'
 
         - name: 抛出回滚完成异常
           fail:
