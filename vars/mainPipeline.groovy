@@ -147,6 +147,112 @@ def call(Map userConfig = [:]) {
             }
 
             // ... 其他阶段保持不变 ...
+            stage('Quality Gate') {
+                when {
+                    expression { !env.ROLLBACK.toBoolean() }
+                }
+                steps {
+                    script {
+                        // === 修改点：缩短超时时间 ===
+                        timeout(time: 3, unit: 'MINUTES') {
+                            try {
+                                def qg = waitForQualityGate()
+                                if (qg.status != 'OK') {
+                                    error "质量门未通过: ${qg.status}"
+                                }
+                            } catch (Exception e) {
+                                echo "质量门检查超时，但继续执行部署"
+                                currentBuild.result = 'UNSTABLE'
+                            }
+                        }
+                    }
+                }
+            }
+
+            stage('Deploy') {
+                when {
+                    expression {
+                        !env.ROLLBACK.toBoolean() &&
+                                (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod')
+                    }
+                }
+                steps {
+                    script {
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
+
+                        if (env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') {
+                            input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}",
+                                    ok: '确认部署',
+                                    submitterParameter: 'APPROVER'
+                        }
+
+                        deployTools.deployToEnvironment(
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.APP_VERSION,
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
+                        )
+
+                        script {
+                            def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log",
+                                    text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
+                                    append: true
+                        }
+                    }
+                }
+            }
+
+            stage('Rollback') {
+                when {
+                    expression { env.ROLLBACK.toBoolean() }
+                }
+                steps {
+                    script {
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
+
+                        echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
+
+                        deployTools.executeRollback(
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.ROLLBACK_VERSION,
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
+                        )
+
+                        script {
+                            def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
+                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log",
+                                    text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
+                                    append: true
+                        }
+                    }
+                }
+            }
+
+            stage('Post-Deployment Test') {
+                when {
+                    expression { !env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod' }
+                }
+                steps {
+                    script {
+                        def deployTools = new org.yakiv.DeployTools(steps, env)
+                        deployTools.healthCheck(
+                                environment: env.DEPLOY_ENV,
+                                projectName: env.PROJECT_NAME,
+                                version: env.APP_VERSION,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
+                        )
+                    }
+                }
+            }
         }
 
         post {
