@@ -40,7 +40,6 @@
       args:
         executable: /bin/bash
 
-    # === 修改点：直接使用 shell 命令拉取镜像，不进行登录 ===
     - name: 拉取新版本镜像
       shell: |
         docker pull "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
@@ -62,7 +61,7 @@
             state: started
             restart_policy: always
             ports:
-              - "{{ app_port }}:8085"
+              - "{{ app_port }}:8080"
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
               JAVA_OPTS: "-Xmx512m -Xms256m -Dapp.version={{ app_version }} -Dapp.env={{ deploy_env }}"
@@ -71,12 +70,45 @@
             memory: 512m
             cpus: 0.5
 
+        # === 修改点：添加容器状态检查 ===
+        - name: 检查容器状态
+          shell: |
+            docker ps -a --filter "name={{ app_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          register: container_status
+          failed_when: false
+
+        - name: 显示容器状态
+          debug:
+            var: container_status.stdout
+
+        - name: 检查容器日志（如果容器退出）
+          when: "'Exited' in container_status.stdout"
+          shell: |
+            docker logs "{{ app_name }}" --tail 50
+          register: container_logs
+          failed_when: false
+
+        - name: 显示容器日志
+          when: "'Exited' in container_status.stdout"
+          debug:
+            var: container_logs.stdout
+
+        - name: 检查容器进程
+          shell: |
+            docker top "{{ app_name }}" || echo "容器未运行"
+          register: container_processes
+          failed_when: false
+
+        - name: 显示容器进程
+          debug:
+            var: container_processes.stdout
+
         - name: 等待容器启动
           wait_for:
             port: "{{ app_port }}"
             host: "{{ target_host }}"
             delay: 5
-            timeout: 30
+            timeout: 120  # === 修改点：增加超时时间 ===
 
         - name: 健康检查
           uri:
@@ -84,7 +116,7 @@
             method: GET
             return_content: yes
             status_code: 200
-            timeout: 30
+            timeout: 120
           register: health_result
           until: health_result.status == 200
           retries: "{{ (health_check_timeout / health_check_interval) | int }}"
@@ -105,6 +137,49 @@
         - name: 部署失败 - 执行自动回滚
           debug:
             msg: "部署失败，开始执行自动回滚..."
+
+        # === 修改点：添加详细的错误诊断 ===
+        - name: 收集容器诊断信息
+          block:
+            - name: 检查最终容器状态
+              shell: |
+                docker ps -a --filter "name={{ app_name }}" || echo "容器不存在"
+              register: final_container_status
+              failed_when: false
+
+            - name: 显示最终容器状态
+              debug:
+                var: final_container_status.stdout
+
+            - name: 获取容器退出日志
+              shell: |
+                docker logs "{{ app_name }}" --tail 100 || echo "无法获取日志"
+              register: final_container_logs
+              failed_when: false
+
+            - name: 显示容器退出日志
+              debug:
+                var: final_container_logs.stdout
+
+            - name: 检查系统资源
+              shell: |
+                echo "=== 内存使用 ==="
+                free -h
+                echo "=== 磁盘空间 ==="
+                df -h
+                echo "=== Docker 系统信息 ==="
+                docker system df
+              register: system_info
+              failed_when: false
+
+            - name: 显示系统信息
+              debug:
+                var: system_info.stdout
+
+          rescue:
+            - name: 诊断信息收集失败
+              debug:
+                msg: "无法收集完整的诊断信息"
 
         - name: 停止失败容器
           docker_container:
@@ -131,7 +206,7 @@
             state: started
             restart_policy: always
             ports:
-              - "{{ app_port }}:8085"
+              - "{{ app_port }}:8080"
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
 
@@ -140,7 +215,7 @@
             port: "{{ app_port }}"
             host: "{{ target_host }}"
             delay: 5
-            timeout: 30
+            timeout: 60
 
         - name: 验证回滚成功
           when: current_version is defined and current_version.stdout != "none"
