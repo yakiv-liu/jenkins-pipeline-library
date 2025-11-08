@@ -80,6 +80,10 @@
           debug:
             var: container_running.stdout
 
+        - name: 等待回滚应用程序启动
+          wait_for:
+            delay: 15
+
         - name: 测试应用程序是否响应
           shell: |
             for i in {1..10}; do
