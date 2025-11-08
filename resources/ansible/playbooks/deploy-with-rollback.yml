@@ -1,106 +1,165 @@
 ---
-- name: 执行应用回滚
+- name: 部署应用并支持自动回滚
   hosts: all
   vars:
     app_name: "{{ project_name }}"
     backup_dir: "{{ backup_dir | default('/opt/backups') }}"
+    max_backups: 10
+    health_check_timeout: 300
+    health_check_interval: 10
 
   tasks:
-    - name: 验证回滚版本是否存在
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: local
-      register: image_check
-      ignore_errors: yes
+    - name: 创建备份目录
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: 创建应用目录
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: 检查当前运行版本
+      shell: |
+        docker ps --filter "name={{ app_name }}" --format "{{ '{{' }}.Image{{ '}}' }}" 2>/dev/null | head -1 || echo "none"
+      register: current_version
       changed_when: false
 
-    - name: 拉取回滚版本（如果本地不存在）
-      when: image_check is failed
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: pull
-
-    - name: 验证回滚版本可用性
-      when: image_check is failed
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: local
-      register: image_check_after_pull
-      failed_when: image_check_after_pull is failed
-
-    - name: 记录回滚操作
+    - name: 备份当前部署配置
+      when: current_version.stdout != "none"
       copy:
         content: |
-          rollback_time: "{{ ansible_date_time.iso8601 }}"
-          rollback_version: "{{ rollback_version }}"
+          app_name: {{ app_name }}
+          current_version: "{{ current_version.stdout | regex_search(':(.*)$', '\\1') | default('unknown') }}"
+          backup_time: "{{ ansible_date_time.iso8601 }}"
           environment: "{{ deploy_env }}"
-          project: "{{ app_name }}"
-        dest: "{{ backup_dir }}/{{ app_name }}-manual-rollback-{{ ansible_date_time.epoch }}.yml"
+        dest: "{{ backup_dir }}/{{ app_name }}-backup-{{ ansible_date_time.epoch }}.yml"
       delegate_to: localhost
 
-    - block:
+    - name: 拉取新版本镜像
+      docker_image:
+        name: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
+        source: pull
+
+    - name: 部署新版本
+      block:
         - name: 停止当前容器
           docker_container:
             name: "{{ app_name }}"
             state: absent
           ignore_errors: yes
 
-        - name: 启动回滚版本
+        - name: 启动新容器
           docker_container:
             name: "{{ app_name }}"
-            image: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+            image: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
             state: started
             restart_policy: always
             ports:
               - "{{ app_port }}:8080"
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
-              APP_VERSION: "{{ rollback_version }}"
+              JAVA_OPTS: "-Xmx512m -Xms256m -Dapp.version={{ app_version }} -Dapp.env={{ deploy_env }}"
+              APP_VERSION: "{{ app_version }}"
+              GIT_COMMIT: "{{ git_commit | default('unknown') }}"
             memory: 512m
             cpus: 0.5
 
         - name: 健康检查
           uri:
             url: "http://localhost:{{ app_port }}/health"
+            method: GET
             return_content: yes
             status_code: 200
             timeout: 30
-          register: rollback_health
-          until: rollback_health.status == 200
-          retries: 10
-          delay: 5
+          register: health_result
+          until: health_result.status == 200
+          retries: "{{ (health_check_timeout / health_check_interval) | int }}"
+          delay: "{{ health_check_interval }}"
 
         - name: 验证版本信息
           uri:
             url: "http://localhost:{{ app_port }}/info"
+            method: GET
             return_content: yes
             status_code: 200
           register: info_result
           failed_when:
             - info_result.status != 200
-            - "'{{ rollback_version }}' not in info_result.content"
+            - "'{{ app_version }}' not in info_result.content"
 
       rescue:
-        - name: 回滚失败处理
+        - name: 部署失败 - 执行自动回滚
           debug:
-            msg: "回滚操作失败，请手动检查"
+            msg: "部署失败，开始执行自动回滚..."
 
-        - name: 记录回滚失败
+        - name: 停止失败容器
+          docker_container:
+            name: "{{ app_name }}"
+            state: absent
+          ignore_errors: yes
+
+        - name: 查找最新备份版本
+          find:
+            paths: "{{ backup_dir }}"
+            patterns: "{{ app_name }}-backup-*.yml"
+          register: available_backups
+
+        - name: 从备份文件获取回滚版本号
+          when: available_backups.files | length > 0
+          include_vars:
+            file: "{{ (available_backups.files | sort(attribute='mtime') | last).path }}"
+
+        - name: 启动回滚版本
+          when: current_version is defined and current_version.stdout != "none"
+          docker_container:
+            name: "{{ app_name }}"
+            image: "{{ current_version.stdout }}"
+            state: started
+            restart_policy: always
+            ports:
+              - "{{ app_port }}:8080"
+            env:
+              SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
+
+        - name: 验证回滚成功
+          when: current_version is defined and current_version.stdout != "none"
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            method: GET
+            return_content: yes
+            status_code: 200
+          register: rollback_health
+          until: rollback_health.status == 200
+          retries: 12
+          delay: 5
+
+        - name: 记录回滚操作
           copy:
             content: |
-              rollback_failed_time: "{{ ansible_date_time.iso8601 }}"
-              rollback_version: "{{ rollback_version }}"
-              error: "回滚操作执行失败"
-            dest: "{{ backup_dir }}/{{ app_name }}-rollback-failed-{{ ansible_date_time.epoch }}.yml"
+              rollback_time: "{{ ansible_date_time.iso8601 }}"
+              failed_version: "{{ app_version }}"
+              rollback_version: "{{ current_version.stdout }}"
+              environment: "{{ deploy_env }}"
+              reason: "Deployment failed, auto-rollback triggered"
+            dest: "{{ backup_dir }}/{{ app_name }}-rollback-{{ ansible_date_time.epoch }}.yml"
           delegate_to: localhost
 
-        - fail:
-            msg: "回滚到版本 {{ rollback_version }} 失败"
+        - name: 抛出回滚完成异常
+          fail:
+            msg: "部署失败，已自动回滚到上一个稳定版本"
 
-    - name: 记录回滚成功信息
-      debug:
-        msg: |
-          回滚完成！
-          环境: {{ deploy_env }}
-          回滚版本: {{ rollback_version }}
-          状态: 成功
+    - name: 清理旧备份
+      find:
+        paths: "{{ backup_dir }}"
+        patterns: "{{ app_name }}-backup-*.yml"
+      register: backup_files
+
+    - name: 保留最新备份文件
+      when: backup_files.files | length > max_backups
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ backup_files.files | sort(attribute='mtime') | list | slice(0, backup_files.files | length - max_backups) }}"
