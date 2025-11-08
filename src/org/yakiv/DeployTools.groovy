@@ -113,7 +113,7 @@ class DeployTools implements Serializable {
 
     def generateInventoryFile(String environment, Map config) {
         def envHost = getEnvironmentHost(config, environment)
-        def appPort = config.appPort ?: 8080
+        def appPort = config.appPort ?: 8085
 
         def inventoryContent = """
             [${environment}]
@@ -153,7 +153,7 @@ class DeployTools implements Serializable {
     def healthCheck(Map config) {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             def targetHost = getEnvironmentHost(config, config.environment)
-            def url = "http://${targetHost}:${config.appPort ?: 8080}"
+            def url = "http://${targetHost}:${config.appPort ?: 8085}"
 
             steps.sh """
                 for i in {1..30}; do
@@ -166,7 +166,7 @@ class DeployTools implements Serializable {
     }
 
     private def getHealthCheckUrl(environment, projectName, Map config) {
-        "http://${getEnvironmentHost(config, environment)}:${config.appPort ?: 8080}"
+        "http://${getEnvironmentHost(config, environment)}:${config.appPort ?: 8085}"
     }
 
     private def getAppDir(String environment) {

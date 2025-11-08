@@ -30,4 +30,4 @@ defaults:
     - "prod"
   agent: "any"
   branch: "main"
-  appPort: 8080
+  appPort: 8085

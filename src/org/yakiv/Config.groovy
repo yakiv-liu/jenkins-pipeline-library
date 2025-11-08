@@ -55,7 +55,7 @@ class Config implements Serializable {
                 environments: getConfigValue(config, 'defaults.environments'),
                 agentLabel: getConfigValue(config, 'defaults.agent'),
                 projectName: getConfigValue(config, 'defaults.project'),
-                appPort: getConfigValue(config, 'defaults.appPort', 8080),
+                appPort: getConfigValue(config, 'defaults.appPort', 8085),
 
                 // 运行时参数默认值
                 deployEnv: 'staging',
@@ -117,7 +117,7 @@ class Config implements Serializable {
     // 获取应用端口
     Integer getAppPort(Map userConfig) {
         def config = loadConfig()
-        return userConfig.appPort ?: getConfigValue(config, 'defaults.appPort', 8080)
+        return userConfig.appPort ?: getConfigValue(config, 'defaults.appPort', 8085)
     }
 
     // 便捷方法 - 基础设施URL
