@@ -147,18 +147,18 @@ class DeployTools implements Serializable {
 
     def healthCheck(Map config) {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-            def url = getHealthCheckUrl(config.environment, config.projectName, config)
+            def targetHost = getEnvironmentHost(config, config.environment)
+            def url = "http://${targetHost}:${config.appPort ?: 8080}"  // ← 修改：使用实际目标主机地址
 
             steps.sh """
-                for i in {1..30}; do
-                    curl -f ${url}/health && curl -f ${url}/info | grep \"version\":\"${config.version}\" && exit 0
-                    sleep 10
-                done
-                exit 1
-            """
+            for i in {1..30}; do
+                curl -f ${url}/health && curl -f ${url}/info | grep \"version\":\"${config.version}\" && exit 0
+                sleep 10
+            done
+            exit 1
+        """
         }
     }
-
     private def getHealthCheckUrl(environment, projectName, Map config) {
         "http://${getEnvironmentHost(config, environment)}:${config.appPort ?: 8080}"
     }

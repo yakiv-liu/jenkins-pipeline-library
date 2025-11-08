@@ -4,6 +4,7 @@
   vars:
     app_name: "{{ project_name }}"
     backup_dir: "{{ backup_dir | default('/opt/backups') }}"
+    target_host: "{{ ansible_host }}"  # ← 新增：使用目标主机的实际地址
 
   tasks:
     - name: 验证回滚版本是否存在
@@ -36,7 +37,6 @@
           environment: "{{ deploy_env }}"
           project: "{{ app_name }}"
         dest: "{{ backup_dir }}/{{ app_name }}-manual-rollback-{{ ansible_date_time.epoch }}.yml"
-      delegate_to: localhost
 
     - block:
         - name: 停止当前容器
@@ -59,9 +59,16 @@
             memory: 512m
             cpus: 0.5
 
+        - name: 等待容器启动
+          wait_for:
+            port: "{{ app_port }}"
+            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            delay: 5
+            timeout: 30
+
         - name: 健康检查
           uri:
-            url: "http://localhost:{{ app_port }}/health"
+            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
             return_content: yes
             status_code: 200
             timeout: 30
@@ -72,7 +79,7 @@
 
         - name: 验证版本信息
           uri:
-            url: "http://localhost:{{ app_port }}/info"
+            url: "http://{{ target_host }}:{{ app_port }}/info"  # ← 修改：使用目标主机地址
             return_content: yes
             status_code: 200
           register: info_result
@@ -92,7 +99,6 @@
               rollback_version: "{{ rollback_version }}"
               error: "回滚操作执行失败"
             dest: "{{ backup_dir }}/{{ app_name }}-rollback-failed-{{ ansible_date_time.epoch }}.yml"
-          delegate_to: localhost
 
         - fail:
             msg: "回滚到版本 {{ rollback_version }} 失败"

@@ -7,6 +7,7 @@
     max_backups: 10
     health_check_timeout: 300
     health_check_interval: 10
+    target_host: "{{ ansible_host }}"  # ← 新增：使用目标主机的实际地址
 
   tasks:
     - name: 创建备份目录
@@ -36,7 +37,6 @@
           backup_time: "{{ ansible_date_time.iso8601 }}"
           environment: "{{ deploy_env }}"
         dest: "{{ backup_dir }}/{{ app_name }}-backup-{{ ansible_date_time.epoch }}.yml"
-      delegate_to: localhost
 
     - name: 拉取新版本镜像
       docker_image:
@@ -67,9 +67,16 @@
             memory: 512m
             cpus: 0.5
 
+        - name: 等待容器启动
+          wait_for:
+            port: "{{ app_port }}"
+            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            delay: 5
+            timeout: 30
+
         - name: 健康检查
           uri:
-            url: "http://localhost:{{ app_port }}/health"
+            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
             method: GET
             return_content: yes
             status_code: 200
@@ -81,7 +88,7 @@
 
         - name: 验证版本信息
           uri:
-            url: "http://localhost:{{ app_port }}/info"
+            url: "http://{{ target_host }}:{{ app_port }}/info"  # ← 修改：使用目标主机地址
             method: GET
             return_content: yes
             status_code: 200
@@ -124,10 +131,17 @@
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
 
+        - name: 等待回滚容器启动
+          wait_for:
+            port: "{{ app_port }}"
+            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            delay: 5
+            timeout: 30
+
         - name: 验证回滚成功
           when: current_version is defined and current_version.stdout != "none"
           uri:
-            url: "http://localhost:{{ app_port }}/health"
+            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
             method: GET
             return_content: yes
             status_code: 200
@@ -145,7 +159,6 @@
               environment: "{{ deploy_env }}"
               reason: "Deployment failed, auto-rollback triggered"
             dest: "{{ backup_dir }}/{{ app_name }}-rollback-{{ ansible_date_time.epoch }}.yml"
-          delegate_to: localhost
 
         - name: 抛出回滚完成异常
           fail:
