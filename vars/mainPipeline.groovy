@@ -242,23 +242,15 @@ def call(Map userConfig = [:]) {
                                     submitterParameter: 'APPROVER'
                         }
 
-                        // === 修改点：使用与推送镜像相同的凭据 ===
-                        steps.withCredentials([steps.usernamePassword(
-                                credentialsId: 'harbor-creds',
-                                passwordVariable: 'HARBOR_PASSWORD',
-                                usernameVariable: 'HARBOR_USERNAME'
-                        )]) {
-                            deployTools.deployToEnvironment(
-                                    projectName: env.PROJECT_NAME,
-                                    environment: env.DEPLOY_ENV,
-                                    version: env.APP_VERSION,
-                                    harborUrl: env.HARBOR_URL,
-                                    appPort: configLoader.getAppPort(config),
-                                    environmentHosts: config.environmentHosts,
-                                    harborUsername: env.HARBOR_USERNAME,
-                                    harborPassword: env.HARBOR_PASSWORD
-                            )
-                        }
+                        // === 修改点：移除 Harbor 凭据包装，直接部署 ===
+                        deployTools.deployToEnvironment(
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.APP_VERSION,
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
+                        )
 
                         script {
                             def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
@@ -281,23 +273,15 @@ def call(Map userConfig = [:]) {
 
                         echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
 
-                        // === 修改点：使用与推送镜像相同的凭据 ===
-                        steps.withCredentials([steps.usernamePassword(
-                                credentialsId: 'harbor-creds',
-                                passwordVariable: 'HARBOR_PASSWORD',
-                                usernameVariable: 'HARBOR_USERNAME'
-                        )]) {
-                            deployTools.executeRollback(
-                                    projectName: env.PROJECT_NAME,
-                                    environment: env.DEPLOY_ENV,
-                                    version: env.ROLLBACK_VERSION,
-                                    harborUrl: env.HARBOR_URL,
-                                    appPort: configLoader.getAppPort(config),
-                                    environmentHosts: config.environmentHosts,
-                                    harborUsername: env.HARBOR_USERNAME,
-                                    harborPassword: env.HARBOR_PASSWORD
-                            )
-                        }
+                        // === 修改点：移除 Harbor 凭据包装，直接回滚 ===
+                        deployTools.executeRollback(
+                                projectName: env.PROJECT_NAME,
+                                environment: env.DEPLOY_ENV,
+                                version: env.ROLLBACK_VERSION,
+                                harborUrl: env.HARBOR_URL,
+                                appPort: configLoader.getAppPort(config),
+                                environmentHosts: config.environmentHosts
+                        )
 
                         script {
                             def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")

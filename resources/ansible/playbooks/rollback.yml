@@ -4,53 +4,22 @@
   vars:
     app_name: "{{ project_name }}"
     backup_dir: "{{ backup_dir | default('/opt/backups') }}"
-    # === 修改点：新增目标主机变量 ===
     target_host: "{{ ansible_host }}"
-    # === 修改点：新增 Harbor 域名提取 ===
-    harbor_domain: "{{ harbor_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
 
   tasks:
-    # === 修改点：新增 Docker 配置任务 ===
-    - name: 配置Docker信任Harbor仓库
-      copy:
-        dest: /etc/docker/daemon.json
-        content: |
-          {
-            "insecure-registries": ["{{ harbor_domain }}"]
-          }
-      notify: 重启Docker服务
-
     - name: 验证回滚版本是否存在
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: local
+      shell: |
+        docker inspect "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}" > /dev/null 2>&1 && echo "exists" || echo "none"
       register: image_check
-      ignore_errors: yes
       changed_when: false
 
     - name: 拉取回滚版本（如果本地不存在）
-      when: image_check is failed
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: pull
+      when: image_check.stdout == "none"
+      shell: |
+        docker pull "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+      args:
+        executable: /bin/bash
 
-    - name: 验证回滚版本可用性
-      when: image_check is failed
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
-        source: local
-      register: image_check_after_pull
-      failed_when: image_check_after_pull is failed
-
-    # === 修改点：新增 Harbor 登录任务 ===
-    - name: 登录Harbor仓库
-      docker_login:
-        registry: "{{ harbor_domain }}"
-        username: "{{ harbor_username | default('admin') }}"
-        password: "{{ harbor_password | default('Harbor12345') }}"
-      when: harbor_username is defined and harbor_password is defined
-
-    # === 修改点：使用 shell 模块替代 copy 模块 ===
     - name: 记录回滚操作
       shell: |
         cat > "{{ backup_dir }}/{{ app_name }}-manual-rollback-$(date +%s).yml" << EOF
@@ -83,7 +52,6 @@
             memory: 512m
             cpus: 0.5
 
-        # === 修改点：新增容器启动等待 ===
         - name: 等待容器启动
           wait_for:
             port: "{{ app_port }}"
@@ -117,7 +85,6 @@
           debug:
             msg: "回滚操作失败，请手动检查"
 
-        # === 修改点：使用 shell 模块替代 copy 模块 ===
         - name: 记录回滚失败
           shell: |
             cat > "{{ backup_dir }}/{{ app_name }}-rollback-failed-$(date +%s).yml" << EOF
@@ -138,10 +105,3 @@
           环境: {{ deploy_env }}
           回滚版本: {{ rollback_version }}
           状态: 成功
-
-  # === 修改点：新增 handlers 用于重启 Docker ===
-  handlers:
-    - name: 重启Docker服务
-      service:
-        name: docker
-        state: restarted

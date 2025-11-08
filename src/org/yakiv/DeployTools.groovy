@@ -13,6 +13,7 @@ class DeployTools implements Serializable {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             prepareAnsibleEnvironment(config.environment, config)
 
+            // === 修改点：移除 Harbor 凭据传递，因为宿主机已经配置好 ===
             def extraVars = [
                     project_name: config.projectName,
                     app_version: config.version,
@@ -24,12 +25,6 @@ class DeployTools implements Serializable {
                     backup_dir: config.backupDir ?: '/opt/backups',
                     git_commit: env.GIT_COMMIT ?: 'unknown'
             ]
-
-            // === 修改点：添加Harbor凭据（如果配置了） ===
-            if (config.harborUsername && config.harborPassword) {
-                extraVars.harbor_username = config.harborUsername
-                extraVars.harbor_password = config.harborPassword
-            }
 
             steps.ansiblePlaybook(
                     playbook: 'ansible-playbooks/deploy-with-rollback.yml',
@@ -45,6 +40,7 @@ class DeployTools implements Serializable {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             prepareAnsibleEnvironment(config.environment, config)
 
+            // === 修改点：移除 Harbor 凭据传递，因为宿主机已经配置好 ===
             def extraVars = [
                     project_name: config.projectName,
                     rollback_version: config.version,
@@ -55,12 +51,6 @@ class DeployTools implements Serializable {
                     backup_dir: config.backupDir ?: '/opt/backups'
             ]
 
-            // === 修改点：添加Harbor凭据（如果配置了） ===
-            if (config.harborUsername && config.harborPassword) {
-                extraVars.harbor_username = config.harborUsername
-                extraVars.harbor_password = config.harborPassword
-            }
-
             steps.ansiblePlaybook(
                     playbook: 'ansible-playbooks/rollback.yml',
                     inventory: "inventory/${config.environment}",
@@ -70,7 +60,6 @@ class DeployTools implements Serializable {
             )
         }
     }
-
     def prepareAnsibleEnvironment(String environment, Map config) {
         steps.sh 'mkdir -p ansible-playbooks inventory'
 

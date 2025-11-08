@@ -8,8 +8,6 @@
     health_check_timeout: 300
     health_check_interval: 10
     target_host: "{{ ansible_host }}"
-    # === 修改点：新增 Harbor 域名提取 ===
-    harbor_domain: "{{ harbor_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
 
   tasks:
     - name: 创建备份目录
@@ -24,23 +22,12 @@
         state: directory
         mode: '0755'
 
-    # === 修改点：新增 Docker 配置任务 ===
-    - name: 配置Docker信任Harbor仓库
-      copy:
-        dest: /etc/docker/daemon.json
-        content: |
-          {
-            "insecure-registries": ["{{ harbor_domain }}"]
-          }
-      notify: 重启Docker服务
-
     - name: 检查当前运行版本
       shell: |
         docker ps --filter "name={{ app_name }}" --format "{{ '{{' }}.Image{{ '}}' }}" 2>/dev/null | head -1 || echo "none"
       register: current_version
       changed_when: false
 
-    # === 修改点：使用 shell 模块替代 copy 模块，避免委托问题 ===
     - name: 备份当前部署配置
       when: current_version.stdout != "none"
       shell: |
@@ -53,18 +40,12 @@
       args:
         executable: /bin/bash
 
-    # === 修改点：新增 Harbor 登录任务 ===
-    - name: 登录Harbor仓库
-      docker_login:
-        registry: "{{ harbor_domain }}"
-        username: "{{ harbor_username | default('admin') }}"
-        password: "{{ harbor_password | default('Harbor12345') }}"
-      when: harbor_username is defined and harbor_password is defined
-
+    # === 修改点：直接使用 shell 命令拉取镜像，不进行登录 ===
     - name: 拉取新版本镜像
-      docker_image:
-        name: "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
-        source: pull
+      shell: |
+        docker pull "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
+      args:
+        executable: /bin/bash
 
     - name: 部署新版本
       block:
@@ -90,7 +71,6 @@
             memory: 512m
             cpus: 0.5
 
-        # === 修改点：新增容器启动等待 ===
         - name: 等待容器启动
           wait_for:
             port: "{{ app_port }}"
@@ -155,7 +135,6 @@
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
 
-        # === 修改点：新增回滚容器启动等待 ===
         - name: 等待回滚容器启动
           wait_for:
             port: "{{ app_port }}"
@@ -175,7 +154,6 @@
           retries: 12
           delay: 5
 
-        # === 修改点：使用 shell 模块替代 copy 模块 ===
         - name: 记录回滚操作
           shell: |
             cat > "{{ backup_dir }}/{{ app_name }}-rollback-$(date +%s).yml" << EOF
@@ -204,10 +182,3 @@
         path: "{{ item.path }}"
         state: absent
       loop: "{{ backup_files.files | sort(attribute='mtime') | list | slice(0, backup_files.files | length - max_backups) }}"
-
-  # === 修改点：新增 handlers 用于重启 Docker ===
-  handlers:
-    - name: 重启Docker服务
-      service:
-        name: docker
-        state: restarted
