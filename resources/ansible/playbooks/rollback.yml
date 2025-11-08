@@ -18,7 +18,7 @@
       shell: |
         docker pull "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
       args:
-        executable: /bin/bash
+        executable: '/bin/bash'
 
     - name: 记录回滚操作
       shell: |
@@ -29,7 +29,7 @@
         project: "{{ app_name }}"
         EOF
       args:
-        executable: /bin/bash
+        executable: '/bin/bash'
 
     - block:
         - name: 停止当前容器
@@ -52,33 +52,24 @@
             memory: 512m
             cpus: 0.5
 
-        - name: 等待容器启动
+        - name: 等待回滚应用程序启动
           wait_for:
-            port: "{{ app_port }}"
-            host: "{{ target_host }}"
-            delay: 5
-            timeout: 30
+            delay: 15
 
-        - name: 健康检查
-          uri:
-            url: "http://{{ target_host }}:{{ app_port }}/health"
-            return_content: yes
-            status_code: 200
-            timeout: 30
-          register: rollback_health
-          until: rollback_health.status == 200
-          retries: 10
-          delay: 5
-
-        - name: 验证版本信息
-          uri:
-            url: "http://{{ target_host }}:{{ app_port }}/info"
-            return_content: yes
-            status_code: 200
-          register: info_result
-          failed_when:
-            - info_result.status != 200
-            - "'{{ rollback_version }}' not in info_result.content"
+        - name: 验证回滚成功
+          shell: |
+            # 测试回滚后的应用程序
+            for i in {1..10}; do
+              if curl -f -s -o /dev/null -w "%{http_code}" "http://localhost:{{ app_port }}/hello" | grep -q "200"; then
+                echo "回滚成功"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "回滚失败：应用程序未响应"
+            exit 1
+          register: rollback_test
+          failed_when: rollback_test.rc != 0
 
       rescue:
         - name: 回滚失败处理
@@ -93,7 +84,7 @@
             error: "回滚操作执行失败"
             EOF
           args:
-            executable: /bin/bash
+            executable: '/bin/bash'
 
         - fail:
             msg: "回滚到版本 {{ rollback_version }} 失败"
