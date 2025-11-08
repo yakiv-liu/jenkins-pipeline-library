@@ -9,7 +9,7 @@
   tasks:
     - name: 验证回滚版本是否存在
       shell: |
-        docker inspect "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}" > /dev/null 2>&1 && echo "exists" || echo "none"
+        docker inspect "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}" > /dev/null 2>/dev/null && echo "exists" || echo "none"
       register: image_check
       changed_when: false
 
@@ -58,7 +58,6 @@
 
         - name: 验证回滚成功
           shell: |
-            # 测试回滚后的应用程序
             for i in {1..10}; do
               if curl -f -s -o /dev/null -w "%{http_code}" "http://localhost:{{ app_port }}/hello" | grep -q "200"; then
                 echo "回滚成功"

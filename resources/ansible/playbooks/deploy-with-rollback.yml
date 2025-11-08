@@ -80,10 +80,6 @@
           debug:
             var: container_running.stdout
 
-        - name: 等待应用程序启动
-          wait_for:
-            delay: 15
-
         - name: 测试应用程序是否响应
           shell: |
             for i in {1..10}; do
@@ -204,16 +200,13 @@
           fail:
             msg: "部署失败，已自动回滚到上一个稳定版本"
 
-    - name: 清理旧备份
-      find:
-        paths: "{{ backup_dir }}"
-        patterns: "{{ app_name }}-backup-*.yml"
-      register: backup_files
-
-    # === 修改点：修复除零错误，使用更安全的清理逻辑 ===
-    - name: 保留最新备份文件
-      when: backup_files.files | length > max_backups
-      file:
-        path: "{{ item.path }}"
-        state: absent
-      loop: "{{ backup_files.files | sort(attribute='mtime') | list[0: (backup_files.files | length - max_backups) | int] }}"
+    # === 修改点：使用简单的 shell 命令清理备份，避免模板问题 ===
+    - name: 清理旧备份文件
+      shell: |
+        # 保留最新的 {{ max_backups }} 个备份文件
+        cd "{{ backup_dir }}"
+        ls -1t {{ app_name }}-backup-*.yml 2>/dev/null | tail -n +{{ max_backups + 1 }} | xargs rm -f -- || echo "没有需要清理的旧备份"
+      args:
+        executable: '/bin/bash'
+      failed_when: false
+      changed_when: false
