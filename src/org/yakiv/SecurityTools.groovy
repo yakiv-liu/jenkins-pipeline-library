@@ -92,7 +92,13 @@ class SecurityTools implements Serializable {
         }
     }
 
-    def fastDependencyCheck() {
+    // === 修改点1：添加 skip 参数支持 ===
+    def fastDependencyCheck(Boolean skip = false) {
+        if (skip) {
+            steps.echo "⏭️ 跳过依赖检查（配置为跳过此步骤）"
+            return
+        }
+
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                 steps.sh """
@@ -131,8 +137,13 @@ class SecurityTools implements Serializable {
         }
     }
 
-    // 可选：保留快速版本（使用预下载数据库）
-    def fastDependencyCheckWithCache() {
+    // === 修改点2：添加 skip 参数支持 ===
+    def fastDependencyCheckWithCache(Boolean skip = false) {
+        if (skip) {
+            steps.echo "⏭️ 跳过依赖检查（配置为跳过此步骤）"
+            return
+        }
+
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                 steps.sh """
@@ -187,13 +198,15 @@ class SecurityTools implements Serializable {
         fastSonarScan(config)
     }
 
-    def dependencyCheck() {
+    // === 修改点3：添加 skip 参数支持 ===
+    def dependencyCheck(Boolean skip = false) {
         // 可以选择使用哪个版本
-        fastDependencyCheck()  // 无超时版本
-        // fastDependencyCheckWithCache()  // 使用缓存的快速版本
+        fastDependencyCheck(skip)  // 无超时版本
+        // fastDependencyCheckWithCache(skip)  // 使用缓存的快速版本
     }
 
-    def runPRSecurityScan(Map config) {
+    // === 修改点4：添加 skip 参数支持 ===
+    def runPRSecurityScan(Map config, Boolean skipDependencyCheck = false) {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.withSonarQubeEnv('sonarqube') {
                 steps.dir(env.WORKSPACE) {
@@ -212,15 +225,20 @@ class SecurityTools implements Serializable {
                 }
             }
 
-            steps.dir(env.WORKSPACE) {
-                steps.sh """
-                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
-                    -DdependencyCheck.failBuildOnCVSS=9
-                """
-                steps.sh """
-                    mvn spotbugs:spotbugs -DskipTests -s \${MAVEN_SETTINGS}
-                """
-                steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif .'
+            // === 修改点：根据 skipDependencyCheck 参数决定是否执行依赖检查 ===
+            if (!skipDependencyCheck) {
+                steps.dir(env.WORKSPACE) {
+                    steps.sh """
+                        mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
+                        -DdependencyCheck.failBuildOnCVSS=9
+                    """
+                    steps.sh """
+                        mvn spotbugs:spotbugs -DskipTests -s \${MAVEN_SETTINGS}
+                    """
+                    steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif .'
+                }
+            } else {
+                steps.echo "⏭️ 跳过 PR 安全扫描中的依赖检查"
             }
         }
     }
