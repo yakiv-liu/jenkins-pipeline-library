@@ -25,7 +25,7 @@ class DeployTools implements Serializable {
                     git_commit: env.GIT_COMMIT ?: 'unknown'
             ]
 
-            // 添加Harbor凭据（如果配置了）
+            // === 修改点：添加Harbor凭据（如果配置了） ===
             if (config.harborUsername && config.harborPassword) {
                 extraVars.harbor_username = config.harborUsername
                 extraVars.harbor_password = config.harborPassword
@@ -45,18 +45,26 @@ class DeployTools implements Serializable {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             prepareAnsibleEnvironment(config.environment, config)
 
+            def extraVars = [
+                    project_name: config.projectName,
+                    rollback_version: config.version,
+                    deploy_env: config.environment,
+                    harbor_url: config.harborUrl,
+                    app_port: config.appPort,
+                    app_dir: getAppDir(config.environment),
+                    backup_dir: config.backupDir ?: '/opt/backups'
+            ]
+
+            // === 修改点：添加Harbor凭据（如果配置了） ===
+            if (config.harborUsername && config.harborPassword) {
+                extraVars.harbor_username = config.harborUsername
+                extraVars.harbor_password = config.harborPassword
+            }
+
             steps.ansiblePlaybook(
                     playbook: 'ansible-playbooks/rollback.yml',
                     inventory: "inventory/${config.environment}",
-                    extraVars: [
-                            project_name: config.projectName,
-                            rollback_version: config.version,
-                            deploy_env: config.environment,
-                            harbor_url: config.harborUrl,
-                            app_port: config.appPort,
-                            app_dir: getAppDir(config.environment),
-                            backup_dir: config.backupDir ?: '/opt/backups'
-                    ],
+                    extraVars: extraVars,
                     credentialsId: 'ansible-ssh-key',
                     disableHostKeyChecking: true
             )
@@ -156,17 +164,18 @@ class DeployTools implements Serializable {
     def healthCheck(Map config) {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             def targetHost = getEnvironmentHost(config, config.environment)
-            def url = "http://${targetHost}:${config.appPort ?: 8080}"  // ← 修改：使用实际目标主机地址
+            def url = "http://${targetHost}:${config.appPort ?: 8080}"
 
             steps.sh """
-            for i in {1..30}; do
-                curl -f ${url}/health && curl -f ${url}/info | grep \"version\":\"${config.version}\" && exit 0
-                sleep 10
-            done
-            exit 1
-        """
+                for i in {1..30}; do
+                    curl -f ${url}/health && curl -f ${url}/info | grep \"version\":\"${config.version}\" && exit 0
+                    sleep 10
+                done
+                exit 1
+            """
         }
     }
+
     private def getHealthCheckUrl(environment, projectName, Map config) {
         "http://${getEnvironmentHost(config, environment)}:${config.appPort ?: 8080}"
     }

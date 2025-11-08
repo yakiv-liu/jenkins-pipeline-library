@@ -10,8 +10,7 @@ def call(Map userConfig = [:]) {
 
         options {
             timeout(time: 60, unit: 'MINUTES')
-            buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '5'))  // 修改这里
-            // buildDiscarder(logRotator(numToKeepStr: '20'))
+            buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '5'))
             disableConcurrentBuilds()
         }
 
@@ -29,12 +28,10 @@ def call(Map userConfig = [:]) {
             APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
             // 添加项目目录环境变量
-            PROJECT_DIR = "${config.projectName}"  // 如 'demo-helloworld'
+            PROJECT_DIR = "${config.projectName}"
 
             // === 新增环境变量：跳过依赖检查标志 ===
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
-            HARBOR_USERNAME = credentials('harbor-username') ?: 'admin'
-            HARBOR_PASSWORD = credentials('harbor-password') ?: 'Harbor12345'
         }
 
         stages {
@@ -75,7 +72,7 @@ def call(Map userConfig = [:]) {
                         echo "环境: ${env.DEPLOY_ENV}"
                         echo "版本: ${env.APP_VERSION}"
                         echo "项目仓库: ${env.PROJECT_REPO_URL}"
-                        echo "项目分支: ${env.PROJECT_BRANCH}"  // 显示分支信息
+                        echo "项目分支: ${env.PROJECT_BRANCH}"
                         echo "端口: ${configLoader.getAppPort(config)}"
                         echo "目标主机: ${configLoader.getEnvironmentHost(config, env.DEPLOY_ENV)}"
                     }
@@ -100,7 +97,7 @@ def call(Map userConfig = [:]) {
                         // 检出实际项目代码到项目名目录，使用动态分支
                         checkout([
                                 $class: 'GitSCM',
-                                branches: [[name: "*/${env.PROJECT_BRANCH}"]],  // 使用动态分支配置
+                                branches: [[name: "*/${env.PROJECT_BRANCH}"]],
                                 extensions: [
                                         [
                                                 $class: 'RelativeTargetDirectory',
@@ -143,7 +140,6 @@ def call(Map userConfig = [:]) {
                     }
                 }
             }
-            // ... 其他阶段保持不变 ...
 
             stage('Build & Security Scan') {
                 when {
@@ -179,7 +175,6 @@ def call(Map userConfig = [:]) {
                     }
 
                     stage('Security Scan') {
-                        // === 修改点：根据配置决定是否跳过依赖检查 ===
                         parallel {
                             stage('SonarQube Scan') {
                                 steps {
@@ -209,14 +204,12 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ... 其他阶段保持不变 ...
             stage('Quality Gate') {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
                 }
                 steps {
                     script {
-                        // === 修改点：缩短超时时间 ===
                         timeout(time: 3, unit: 'MINUTES') {
                             try {
                                 def qg = waitForQualityGate()
@@ -249,16 +242,23 @@ def call(Map userConfig = [:]) {
                                     submitterParameter: 'APPROVER'
                         }
 
-                        deployTools.deployToEnvironment(
-                                projectName: env.PROJECT_NAME,
-                                environment: env.DEPLOY_ENV,
-                                version: env.APP_VERSION,
-                                harborUrl: env.HARBOR_URL,
-                                appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts,
-                                harborUsername: env.HARBOR_USERNAME,  // ← 新增
-                                harborPassword: env.HARBOR_PASSWORD   // ← 新增
-                        )
+                        // === 修改点：使用与推送镜像相同的凭据 ===
+                        steps.withCredentials([steps.usernamePassword(
+                                credentialsId: 'harbor-creds',
+                                passwordVariable: 'HARBOR_PASSWORD',
+                                usernameVariable: 'HARBOR_USERNAME'
+                        )]) {
+                            deployTools.deployToEnvironment(
+                                    projectName: env.PROJECT_NAME,
+                                    environment: env.DEPLOY_ENV,
+                                    version: env.APP_VERSION,
+                                    harborUrl: env.HARBOR_URL,
+                                    appPort: configLoader.getAppPort(config),
+                                    environmentHosts: config.environmentHosts,
+                                    harborUsername: env.HARBOR_USERNAME,
+                                    harborPassword: env.HARBOR_PASSWORD
+                            )
+                        }
 
                         script {
                             def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
@@ -281,14 +281,23 @@ def call(Map userConfig = [:]) {
 
                         echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
 
-                        deployTools.executeRollback(
-                                projectName: env.PROJECT_NAME,
-                                environment: env.DEPLOY_ENV,
-                                version: env.ROLLBACK_VERSION,
-                                harborUrl: env.HARBOR_URL,
-                                appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts
-                        )
+                        // === 修改点：使用与推送镜像相同的凭据 ===
+                        steps.withCredentials([steps.usernamePassword(
+                                credentialsId: 'harbor-creds',
+                                passwordVariable: 'HARBOR_PASSWORD',
+                                usernameVariable: 'HARBOR_USERNAME'
+                        )]) {
+                            deployTools.executeRollback(
+                                    projectName: env.PROJECT_NAME,
+                                    environment: env.DEPLOY_ENV,
+                                    version: env.ROLLBACK_VERSION,
+                                    harborUrl: env.HARBOR_URL,
+                                    appPort: configLoader.getAppPort(config),
+                                    environmentHosts: config.environmentHosts,
+                                    harborUsername: env.HARBOR_USERNAME,
+                                    harborPassword: env.HARBOR_PASSWORD
+                            )
+                        }
 
                         script {
                             def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")

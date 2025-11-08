@@ -4,9 +4,22 @@
   vars:
     app_name: "{{ project_name }}"
     backup_dir: "{{ backup_dir | default('/opt/backups') }}"
-    target_host: "{{ ansible_host }}"  # ← 新增：使用目标主机的实际地址
+    # === 修改点：新增目标主机变量 ===
+    target_host: "{{ ansible_host }}"
+    # === 修改点：新增 Harbor 域名提取 ===
+    harbor_domain: "{{ harbor_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
 
   tasks:
+    # === 修改点：新增 Docker 配置任务 ===
+    - name: 配置Docker信任Harbor仓库
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "insecure-registries": ["{{ harbor_domain }}"]
+          }
+      notify: 重启Docker服务
+
     - name: 验证回滚版本是否存在
       docker_image:
         name: "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
@@ -29,14 +42,25 @@
       register: image_check_after_pull
       failed_when: image_check_after_pull is failed
 
+    # === 修改点：新增 Harbor 登录任务 ===
+    - name: 登录Harbor仓库
+      docker_login:
+        registry: "{{ harbor_domain }}"
+        username: "{{ harbor_username | default('admin') }}"
+        password: "{{ harbor_password | default('Harbor12345') }}"
+      when: harbor_username is defined and harbor_password is defined
+
+    # === 修改点：使用 shell 模块替代 copy 模块 ===
     - name: 记录回滚操作
-      copy:
-        content: |
-          rollback_time: "{{ ansible_date_time.iso8601 }}"
-          rollback_version: "{{ rollback_version }}"
-          environment: "{{ deploy_env }}"
-          project: "{{ app_name }}"
-        dest: "{{ backup_dir }}/{{ app_name }}-manual-rollback-{{ ansible_date_time.epoch }}.yml"
+      shell: |
+        cat > "{{ backup_dir }}/{{ app_name }}-manual-rollback-$(date +%s).yml" << EOF
+        rollback_time: "$(date -Iseconds)"
+        rollback_version: "{{ rollback_version }}"
+        environment: "{{ deploy_env }}"
+        project: "{{ app_name }}"
+        EOF
+      args:
+        executable: /bin/bash
 
     - block:
         - name: 停止当前容器
@@ -59,16 +83,17 @@
             memory: 512m
             cpus: 0.5
 
+        # === 修改点：新增容器启动等待 ===
         - name: 等待容器启动
           wait_for:
             port: "{{ app_port }}"
-            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            host: "{{ target_host }}"
             delay: 5
             timeout: 30
 
         - name: 健康检查
           uri:
-            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
+            url: "http://{{ target_host }}:{{ app_port }}/health"
             return_content: yes
             status_code: 200
             timeout: 30
@@ -79,7 +104,7 @@
 
         - name: 验证版本信息
           uri:
-            url: "http://{{ target_host }}:{{ app_port }}/info"  # ← 修改：使用目标主机地址
+            url: "http://{{ target_host }}:{{ app_port }}/info"
             return_content: yes
             status_code: 200
           register: info_result
@@ -92,13 +117,16 @@
           debug:
             msg: "回滚操作失败，请手动检查"
 
+        # === 修改点：使用 shell 模块替代 copy 模块 ===
         - name: 记录回滚失败
-          copy:
-            content: |
-              rollback_failed_time: "{{ ansible_date_time.iso8601 }}"
-              rollback_version: "{{ rollback_version }}"
-              error: "回滚操作执行失败"
-            dest: "{{ backup_dir }}/{{ app_name }}-rollback-failed-{{ ansible_date_time.epoch }}.yml"
+          shell: |
+            cat > "{{ backup_dir }}/{{ app_name }}-rollback-failed-$(date +%s).yml" << EOF
+            rollback_failed_time: "$(date -Iseconds)"
+            rollback_version: "{{ rollback_version }}"
+            error: "回滚操作执行失败"
+            EOF
+          args:
+            executable: /bin/bash
 
         - fail:
             msg: "回滚到版本 {{ rollback_version }} 失败"
@@ -110,3 +138,10 @@
           环境: {{ deploy_env }}
           回滚版本: {{ rollback_version }}
           状态: 成功
+
+  # === 修改点：新增 handlers 用于重启 Docker ===
+  handlers:
+    - name: 重启Docker服务
+      service:
+        name: docker
+        state: restarted
