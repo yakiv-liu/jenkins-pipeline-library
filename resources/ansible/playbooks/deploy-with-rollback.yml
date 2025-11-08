@@ -7,7 +7,8 @@
     max_backups: 10
     health_check_timeout: 300
     health_check_interval: 10
-    target_host: "{{ ansible_host }}"  # ← 新增：使用目标主机的实际地址
+    target_host: "{{ ansible_host }}"
+    harbor_domain: "{{ harbor_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"  # ← 新增：提取Harbor域名
 
   tasks:
     - name: 创建备份目录
@@ -22,6 +23,15 @@
         state: directory
         mode: '0755'
 
+    - name: 配置Docker信任Harbor仓库  # ← 新增：配置Docker
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "insecure-registries": ["{{ harbor_domain }}"]
+          }
+      notify: 重启Docker服务
+
     - name: 检查当前运行版本
       shell: |
         docker ps --filter "name={{ app_name }}" --format "{{ '{{' }}.Image{{ '}}' }}" 2>/dev/null | head -1 || echo "none"
@@ -30,13 +40,22 @@
 
     - name: 备份当前部署配置
       when: current_version.stdout != "none"
-      copy:
-        content: |
-          app_name: {{ app_name }}
-          current_version: "{{ current_version.stdout | regex_replace('.*:', '') | default('unknown') }}"
-          backup_time: "{{ ansible_date_time.iso8601 }}"
-          environment: "{{ deploy_env }}"
-        dest: "{{ backup_dir }}/{{ app_name }}-backup-{{ ansible_date_time.epoch }}.yml"
+      shell: |
+        cat > "{{ backup_dir }}/{{ app_name }}-backup-$(date +%s).yml" << EOF
+        app_name: {{ app_name }}
+        current_version: "{{ current_version.stdout | regex_replace('.*:', '') | default('unknown') }}"
+        backup_time: "$(date -Iseconds)"
+        environment: "{{ deploy_env }}"
+        EOF
+      args:
+        executable: /bin/bash
+
+    - name: 登录Harbor仓库  # ← 新增：登录到Harbor
+      docker_login:
+        registry: "{{ harbor_domain }}"
+        username: "{{ harbor_username | default('admin') }}"
+        password: "{{ harbor_password | default('Harbor12345') }}"
+      when: harbor_username is defined and harbor_password is defined
 
     - name: 拉取新版本镜像
       docker_image:
@@ -70,13 +89,13 @@
         - name: 等待容器启动
           wait_for:
             port: "{{ app_port }}"
-            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            host: "{{ target_host }}"
             delay: 5
             timeout: 30
 
         - name: 健康检查
           uri:
-            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
+            url: "http://{{ target_host }}:{{ app_port }}/health"
             method: GET
             return_content: yes
             status_code: 200
@@ -88,7 +107,7 @@
 
         - name: 验证版本信息
           uri:
-            url: "http://{{ target_host }}:{{ app_port }}/info"  # ← 修改：使用目标主机地址
+            url: "http://{{ target_host }}:{{ app_port }}/info"
             method: GET
             return_content: yes
             status_code: 200
@@ -134,14 +153,14 @@
         - name: 等待回滚容器启动
           wait_for:
             port: "{{ app_port }}"
-            host: "{{ target_host }}"  # ← 修改：使用目标主机地址
+            host: "{{ target_host }}"
             delay: 5
             timeout: 30
 
         - name: 验证回滚成功
           when: current_version is defined and current_version.stdout != "none"
           uri:
-            url: "http://{{ target_host }}:{{ app_port }}/health"  # ← 修改：使用目标主机地址
+            url: "http://{{ target_host }}:{{ app_port }}/health"
             method: GET
             return_content: yes
             status_code: 200
@@ -151,14 +170,16 @@
           delay: 5
 
         - name: 记录回滚操作
-          copy:
-            content: |
-              rollback_time: "{{ ansible_date_time.iso8601 }}"
-              failed_version: "{{ app_version }}"
-              rollback_version: "{{ current_version.stdout }}"
-              environment: "{{ deploy_env }}"
-              reason: "Deployment failed, auto-rollback triggered"
-            dest: "{{ backup_dir }}/{{ app_name }}-rollback-{{ ansible_date_time.epoch }}.yml"
+          shell: |
+            cat > "{{ backup_dir }}/{{ app_name }}-rollback-$(date +%s).yml" << EOF
+            rollback_time: "$(date -Iseconds)"
+            failed_version: "{{ app_version }}"
+            rollback_version: "{{ current_version.stdout }}"
+            environment: "{{ deploy_env }}"
+            reason: "Deployment failed, auto-rollback triggered"
+            EOF
+          args:
+            executable: /bin/bash
 
         - name: 抛出回滚完成异常
           fail:
@@ -176,3 +197,9 @@
         path: "{{ item.path }}"
         state: absent
       loop: "{{ backup_files.files | sort(attribute='mtime') | list | slice(0, backup_files.files | length - max_backups) }}"
+
+  handlers:
+    - name: 重启Docker服务  # ← 新增：重启Docker的handler
+      service:
+        name: docker
+        state: restarted

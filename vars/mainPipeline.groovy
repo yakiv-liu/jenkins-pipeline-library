@@ -33,6 +33,8 @@ def call(Map userConfig = [:]) {
 
             // === 新增环境变量：跳过依赖检查标志 ===
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
+            HARBOR_USERNAME = credentials('harbor-username') ?: 'admin'
+            HARBOR_PASSWORD = credentials('harbor-password') ?: 'Harbor12345'
         }
 
         stages {
@@ -253,7 +255,9 @@ def call(Map userConfig = [:]) {
                                 version: env.APP_VERSION,
                                 harborUrl: env.HARBOR_URL,
                                 appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts
+                                environmentHosts: config.environmentHosts,
+                                harborUsername: env.HARBOR_USERNAME,  // ← 新增
+                                harborPassword: env.HARBOR_PASSWORD   // ← 新增
                         )
 
                         script {

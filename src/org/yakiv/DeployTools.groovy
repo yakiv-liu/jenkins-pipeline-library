@@ -13,20 +13,28 @@ class DeployTools implements Serializable {
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             prepareAnsibleEnvironment(config.environment, config)
 
+            def extraVars = [
+                    project_name: config.projectName,
+                    app_version: config.version,
+                    deploy_env: config.environment,
+                    harbor_url: config.harborUrl,
+                    enable_rollback: true,
+                    app_port: config.appPort,
+                    app_dir: getAppDir(config.environment),
+                    backup_dir: config.backupDir ?: '/opt/backups',
+                    git_commit: env.GIT_COMMIT ?: 'unknown'
+            ]
+
+            // 添加Harbor凭据（如果配置了）
+            if (config.harborUsername && config.harborPassword) {
+                extraVars.harbor_username = config.harborUsername
+                extraVars.harbor_password = config.harborPassword
+            }
+
             steps.ansiblePlaybook(
                     playbook: 'ansible-playbooks/deploy-with-rollback.yml',
                     inventory: "inventory/${config.environment}",
-                    extraVars: [
-                            project_name: config.projectName,
-                            app_version: config.version,
-                            deploy_env: config.environment,
-                            harbor_url: config.harborUrl,
-                            enable_rollback: true,
-                            app_port: config.appPort,
-                            app_dir: getAppDir(config.environment),
-                            backup_dir: config.backupDir ?: '/opt/backups',
-                            git_commit: env.GIT_COMMIT ?: 'unknown'  // 确保 git_commit 有值
-                    ],
+                    extraVars: extraVars,
                     credentialsId: 'ansible-ssh-key',
                     disableHostKeyChecking: true
             )
