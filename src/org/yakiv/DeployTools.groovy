@@ -24,7 +24,8 @@ class DeployTools implements Serializable {
                             enable_rollback: true,
                             app_port: config.appPort,
                             app_dir: getAppDir(config.environment),
-                            backup_dir: config.backupDir ?: '/opt/backups'
+                            backup_dir: config.backupDir ?: '/opt/backups',
+                            git_commit: env.GIT_COMMIT
                     ],
                     credentialsId: 'ansible-ssh-key',
                     disableHostKeyChecking: true
@@ -114,7 +115,6 @@ class DeployTools implements Serializable {
             ${envHost} ansible_user=root ansible_ssh_private_key_file=/tmp/ansible-key
             
             [${environment}:vars]
-            deploy_user=appuser
             app_port=${appPort}
             app_dir=${getAppDir(environment)}
             backup_dir=${config.backupDir ?: '/opt/backups'}
