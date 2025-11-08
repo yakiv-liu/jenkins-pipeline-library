@@ -70,7 +70,6 @@
             memory: 512m
             cpus: 0.5
 
-        # === 修改点：简化容器状态检查，完全移除复杂格式 ===
         - name: 检查容器是否运行
           shell: |
             docker inspect --format='{{ '{{' }}.State.Running{{ '}}' }}' "{{ app_name }}" 2>/dev/null || echo "false"
@@ -81,15 +80,12 @@
           debug:
             var: container_running.stdout
 
-        # === 修改点：直接等待应用程序启动，不依赖复杂检查 ===
         - name: 等待应用程序启动
           wait_for:
-            delay: 15  # Spring Boot 应用需要约8秒启动，我们给15秒
+            delay: 15
 
-        # === 修改点：直接测试应用程序端点 ===
         - name: 测试应用程序是否响应
           shell: |
-            # 尝试访问应用程序端点
             for i in {1..10}; do
               if curl -f -s -o /dev/null -w "%{http_code}" "http://localhost:{{ app_port }}/hello" | grep -q "200"; then
                 echo "应用程序已就绪"
@@ -188,7 +184,6 @@
         - name: 验证回滚成功
           when: current_version is defined and current_version.stdout != "none"
           shell: |
-            # 测试回滚后的应用程序
             curl -f -s "http://localhost:{{ app_port }}/hello" && echo "回滚成功" || echo "回滚失败"
           register: rollback_test
           failed_when: rollback_test.rc != 0
@@ -215,9 +210,10 @@
         patterns: "{{ app_name }}-backup-*.yml"
       register: backup_files
 
+    # === 修改点：修复除零错误，使用更安全的清理逻辑 ===
     - name: 保留最新备份文件
       when: backup_files.files | length > max_backups
       file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ backup_files.files | sort(attribute='mtime') | list | slice(0, backup_files.files | length - max_backups) }}"
+      loop: "{{ backup_files.files | sort(attribute='mtime') | list[0: (backup_files.files | length - max_backups) | int] }}"
