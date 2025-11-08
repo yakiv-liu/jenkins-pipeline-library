@@ -18,7 +18,7 @@ environments:
   pre-prod:
     host: "192.168.233.9"
   prod:
-    host: "192.168.233.7"
+    host: "192.168.233.10"
 
 # 默认项目配置
 defaults:
