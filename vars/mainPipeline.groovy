@@ -20,7 +20,7 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${configLoader.getHarborUrl()}"
             SONAR_URL = "${configLoader.getSonarUrl()}"
             TRIVY_URL = "${configLoader.getTrivyUrl()}"
-            BACKUP_DIR = "${configLoader.getBackupDir()}"
+            BACKUP_DIR = "${configLoader.getBackupDir() ?: '/tmp/backups'}"  // === 修改点：添加默认值 ===
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
@@ -252,12 +252,27 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
+                        // === 修改点：修复文件写入操作，添加异常处理 ===
                         script {
-                            def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
-                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log",
-                                    text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
-                                    append: true
+                            try {
+                                def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+
+                                // 确保备份目录存在
+                                steps.sh "mkdir -p ${env.BACKUP_DIR}"
+
+                                // 写入版本文件
+                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
+
+                                // 写入部署日志
+                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log",
+                                        text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
+                                        append: true
+
+                                echo "部署记录已保存"
+                            } catch (Exception e) {
+                                echo "警告：部署记录保存失败: ${e.getMessage()}"
+                                // 不抛出异常，避免影响部署状态
+                            }
                         }
                     }
                 }
@@ -283,12 +298,27 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
+                        // === 修改点：修复文件写入操作，添加异常处理 ===
                         script {
-                            def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
-                            writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log",
-                                    text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
-                                    append: true
+                            try {
+                                def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+
+                                // 确保备份目录存在
+                                steps.sh "mkdir -p ${env.BACKUP_DIR}"
+
+                                // 写入版本文件
+                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
+
+                                // 写入回滚日志
+                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log",
+                                        text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
+                                        append: true
+
+                                echo "回滚记录已保存"
+                            } catch (Exception e) {
+                                echo "警告：回滚记录保存失败: ${e.getMessage()}"
+                                // 不抛出异常，避免影响回滚状态
+                            }
                         }
                     }
                 }
