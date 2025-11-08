@@ -59,8 +59,7 @@ class DeployTools implements Serializable {
     def prepareAnsibleEnvironment(String environment, Map config) {
         steps.sh '''
             echo "当前工作目录: $(pwd)"
-            echo "目录内容:"
-            ls -la
+            echo "准备 Ansible 环境..."
         '''
 
         steps.sh '''
@@ -68,29 +67,65 @@ class DeployTools implements Serializable {
             mkdir -p inventory
         '''
 
-        // === 修复点：直接使用项目中的 playbooks ===
-        steps.sh """
-            echo "复制项目中的 Ansible playbooks..."
-            
-            # 检查项目中的 playbooks 目录
-            if [ -d "ansible/playbooks" ]; then
-                echo "从项目目录复制 playbooks"
-                cp ansible/playbooks/*.yml ansible-playbooks/ || echo "部分文件复制失败"
-                echo "复制完成，ansible-playbooks 内容:"
-                ls -la ansible-playbooks/
-            else
-                echo "错误：项目目录中未找到 ansible/playbooks 目录"
-                echo "当前目录结构:"
-                find . -name "*.yml" -type f | head -20
-                exit 1
-            fi
-        """
+        // === 动态复制整个 ansible 目录 ===
+        copyAnsibleDirectory()
 
         // 动态生成 inventory 文件
         generateInventoryFile(environment, config)
 
         // 设置 SSH 密钥
         setupSSHKey()
+    }
+
+    def copyAnsibleDirectory() {
+        steps.sh """
+            echo "从共享库复制整个 Ansible 目录..."
+        """
+
+        try {
+            // 定义要复制的 Ansible 目录结构
+            def ansibleStructure = [
+                    'ansible/playbooks/deploy-with-rollback.yml',
+                    'ansible/playbooks/rollback.yml'
+                    // 可以继续添加其他文件，如：
+                    // 'ansible/templates/some-template.j2',
+                    // 'ansible/roles/some-role/tasks/main.yml'
+            ]
+
+            // 复制每个文件
+            ansibleStructure.each { resourcePath ->
+                try {
+                    def content = steps.libraryResource resourcePath
+                    // 确保目标目录存在
+                    def targetDir = resourcePath.split('/')[0..-2].join('/')
+                    if (targetDir) {
+                        steps.sh "mkdir -p ${targetDir}"
+                    }
+                    steps.writeFile file: resourcePath, text: content
+                    steps.echo "✅ 复制 ${resourcePath}"
+                } catch (Exception e) {
+                    steps.echo "❌ 复制 ${resourcePath} 失败: ${e.getMessage()}"
+                    throw e
+                }
+            }
+
+            // 同时复制到 ansible-playbooks 目录以便向后兼容
+            steps.sh """
+                echo "复制 playbooks 到 ansible-playbooks 目录..."
+                cp ansible/playbooks/*.yml ansible-playbooks/ 2>/dev/null || echo "没有可复制的 playbooks"
+            """
+
+            steps.echo "✅ 整个 Ansible 目录复制完成"
+            steps.sh '''
+                echo "最终目录结构:"
+                find . -name "*.yml" -type f | head -20
+                echo "ansible-playbooks 目录内容:"
+                ls -la ansible-playbooks/ 2>/dev/null || echo "ansible-playbooks 目录不存在"
+            '''
+        } catch (Exception e) {
+            steps.echo "❌ 复制 Ansible 目录失败: ${e.getMessage()}"
+            throw e
+        }
     }
 
     def generateInventoryFile(String environment, Map config) {
