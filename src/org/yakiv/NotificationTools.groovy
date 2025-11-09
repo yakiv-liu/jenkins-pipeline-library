@@ -13,13 +13,44 @@ class NotificationTools implements Serializable {
 
     def sendPipelineNotification(Map config) {
         try {
+            // === 修改点：添加详细的调试信息 ===
+            steps.echo "=== 邮件模板调试信息 ==="
+            steps.echo "configLoader 是否为 null: ${configLoader == null}"
+
+            if (configLoader != null) {
+                steps.echo "configLoader 类型: ${configLoader.getClass().name}"
+                // 测试是否能调用其他方法
+                try {
+                    def testColor = configLoader.getStatusColor('SUCCESS')
+                    steps.echo "能调用 getStatusColor: ${testColor != null}"
+                } catch (Exception e) {
+                    steps.echo "调用 getStatusColor 失败: ${e.message}"
+                }
+            }
+
             // 确定流水线类型
             def pipelineType = config.pipelineType ?: determinePipelineType(config)
             def status = config.status ?: 'UNKNOWN'
             def finalStatus = (status == null) ? 'SUCCESS' : status
 
-            // 获取邮件模板
-            def template = configLoader?.getEmailTemplate('pipeline')
+            // 获取邮件模板 - 添加详细调试
+            steps.echo "开始获取邮件模板..."
+            def template = null
+            if (configLoader != null) {
+                try {
+                    template = configLoader.getEmailTemplate('pipeline')
+                    steps.echo "getEmailTemplate 调用完成，结果: ${template != null ? '非空' : 'null'}"
+                    if (template != null) {
+                        steps.echo "模板内容 - subject: ${template.subject != null}"
+                        steps.echo "模板内容 - body: ${template.body != null}"
+                    }
+                } catch (Exception e) {
+                    steps.echo "调用 getEmailTemplate 失败: ${e.message}"
+                    steps.echo "异常堆栈: ${e.stackTraceToString()}"
+                }
+            } else {
+                steps.echo "configLoader 为 null，无法获取模板"
+            }
 
             def subject, body
 
@@ -64,26 +95,12 @@ class NotificationTools implements Serializable {
             steps.echo "准备发送邮件给: ${config.recipients}"
             steps.echo "邮件主题: ${subject}"
 
-            // === 修复点：移除不支持的 credentialsId 参数 ===
-            def emailParams = [
+            // === 修复点：使用最简化的 emailext 参数 ===
+            steps.emailext(
                     subject: subject,
                     body: body,
-                    to: config.recipients,
-                    attachLog: config.attachLog ?: (finalStatus != 'SUCCESS'),
-                    compressLog: true
-            ]
-
-            // 根据模板类型设置 MIME 类型
-            if (template) {
-                emailParams.mimeType = 'text/html'
-            }
-
-            // 添加可选的回复地址
-            if (config.replyTo) {
-                emailParams.replyTo = config.replyTo
-            }
-
-            steps.emailext(emailParams)
+                    to: config.recipients
+            )
 
             steps.echo "✅ 邮件发送成功给: ${config.recipients}"
 
@@ -144,17 +161,11 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            def emailParams = [
+            steps.emailext(
                     subject: subject,
                     body: body,
                     to: config.recipients
-            ]
-
-            if (template) {
-                emailParams.mimeType = 'text/html'
-            }
-
-            steps.emailext(emailParams)
+            )
 
             steps.echo "✅ 构建通知邮件发送成功"
 
@@ -195,17 +206,11 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            def emailParams = [
+            steps.emailext(
                     subject: subject,
                     body: body,
                     to: config.recipients
-            ]
-
-            if (template) {
-                emailParams.mimeType = 'text/html'
-            }
-
-            steps.emailext(emailParams)
+            )
 
             steps.echo "✅ 部署通知邮件发送成功"
 
@@ -246,17 +251,11 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            def emailParams = [
+            steps.emailext(
                     subject: subject,
                     body: body,
                     to: config.recipients
-            ]
-
-            if (template) {
-                emailParams.mimeType = 'text/html'
-            }
-
-            steps.emailext(emailParams)
+            )
 
             steps.echo "✅ 回滚通知邮件发送成功"
 

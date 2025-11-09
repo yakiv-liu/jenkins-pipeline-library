@@ -10,6 +10,22 @@ class Config implements Serializable {
         // === 修改点2：移除构造函数中的 loadEmailTemplates() 调用 ===
     }
 
+    // === 新增调试方法 ===
+    def testEmailTemplateLoading() {
+        steps.echo "=== 测试邮件模板加载 ==="
+        steps.echo "emailTemplates 初始状态: ${emailTemplates == null ? 'null' : '已加载'}"
+
+        def template = getEmailTemplate('pipeline')
+        steps.echo "获取 pipeline 模板结果: ${template == null ? 'null' : '成功'}"
+
+        if (template != null) {
+            steps.echo "模板主题: ${template.subject != null}"
+            steps.echo "模板正文: ${template.body != null}"
+        }
+
+        return template != null
+    }
+
     // 加载配置 - 失败时直接报错
     Map loadConfig() {
         try {

@@ -347,7 +347,17 @@ def call(Map userConfig = [:]) {
         post {
             always {
                 script {
-                    def notificationTools = new org.yakiv.NotificationTools(steps)
+                    // === 关键修改点：传递 configLoader 到 NotificationTools ===
+                    def notificationTools = new org.yakiv.NotificationTools(steps, env, configLoader)
+
+                    // 确定流水线类型
+                    def pipelineType = 'DEPLOYMENT'
+                    if (env.ROLLBACK.toBoolean()) {
+                        pipelineType = 'ROLLBACK'
+                    } else if (currentBuild.result == 'ABORTED') {
+                        pipelineType = 'ABORTED'
+                    }
+
                     notificationTools.sendPipelineNotification(
                             project: env.PROJECT_NAME,
                             environment: env.DEPLOY_ENV,
@@ -355,7 +365,9 @@ def call(Map userConfig = [:]) {
                             status: currentBuild.result,
                             recipients: env.EMAIL_RECIPIENTS,
                             buildUrl: env.BUILD_URL,
-                            isRollback: env.ROLLBACK.toBoolean()
+                            isRollback: env.ROLLBACK.toBoolean(),
+                            pipelineType: pipelineType,
+                            attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null)
                     )
 
                     // === 修改点：添加备份文件到归档 ===
