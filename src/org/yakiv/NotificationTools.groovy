@@ -18,11 +18,8 @@ class NotificationTools implements Serializable {
             def status = config.status ?: 'UNKNOWN'
             def finalStatus = (status == null) ? 'SUCCESS' : status
 
-            // 获取邮件模板 - 添加空值检查
-            def template = null
-            if (configLoader != null) {
-                template = configLoader.getEmailTemplate('pipeline')
-            }
+            // 获取邮件模板
+            def template = configLoader?.getEmailTemplate('pipeline')
 
             def subject, body
 
@@ -67,19 +64,26 @@ class NotificationTools implements Serializable {
             steps.echo "准备发送邮件给: ${config.recipients}"
             steps.echo "邮件主题: ${subject}"
 
-            // 发送邮件 - 使用您配置的QQ邮箱凭据
-            steps.emailext(
+            // === 修复点：移除不支持的 credentialsId 参数 ===
+            def emailParams = [
                     subject: subject,
                     body: body,
                     to: config.recipients,
-                    mimeType: template ? 'text/html' : 'text/plain',
                     attachLog: config.attachLog ?: (finalStatus != 'SUCCESS'),
-                    compressLog: true,
-                    recipientProviders: [[$class: 'RequesterRecipientProvider']],
-                    replyTo: config.replyTo ?: '',
-                    from: 'jenkins@yourcompany.com',
-                    credentialsId: 'qq-email-credentials'
-            )
+                    compressLog: true
+            ]
+
+            // 根据模板类型设置 MIME 类型
+            if (template) {
+                emailParams.mimeType = 'text/html'
+            }
+
+            // 添加可选的回复地址
+            if (config.replyTo) {
+                emailParams.replyTo = config.replyTo
+            }
+
+            steps.emailext(emailParams)
 
             steps.echo "✅ 邮件发送成功给: ${config.recipients}"
 
@@ -140,13 +144,17 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            steps.emailext(
+            def emailParams = [
                     subject: subject,
                     body: body,
-                    to: config.recipients,
-                    mimeType: template ? 'text/html' : 'text/plain',
-                    credentialsId: 'qq-email-credentials'
-            )
+                    to: config.recipients
+            ]
+
+            if (template) {
+                emailParams.mimeType = 'text/html'
+            }
+
+            steps.emailext(emailParams)
 
             steps.echo "✅ 构建通知邮件发送成功"
 
@@ -187,13 +195,17 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            steps.emailext(
+            def emailParams = [
                     subject: subject,
                     body: body,
-                    to: config.recipients,
-                    mimeType: template ? 'text/html' : 'text/plain',
-                    credentialsId: 'qq-email-credentials'
-            )
+                    to: config.recipients
+            ]
+
+            if (template) {
+                emailParams.mimeType = 'text/html'
+            }
+
+            steps.emailext(emailParams)
 
             steps.echo "✅ 部署通知邮件发送成功"
 
@@ -234,13 +246,17 @@ class NotificationTools implements Serializable {
                 """
             }
 
-            steps.emailext(
+            def emailParams = [
                     subject: subject,
                     body: body,
-                    to: config.recipients,
-                    mimeType: template ? 'text/html' : 'text/plain',
-                    credentialsId: 'qq-email-credentials'
-            )
+                    to: config.recipients
+            ]
+
+            if (template) {
+                emailParams.mimeType = 'text/html'
+            }
+
+            steps.emailext(emailParams)
 
             steps.echo "✅ 回滚通知邮件发送成功"
 
