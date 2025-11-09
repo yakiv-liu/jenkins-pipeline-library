@@ -82,7 +82,7 @@
 
         - name: 等待回滚应用程序启动
           wait_for:
-            delay: 15
+            delay: 7
 
         - name: 测试应用程序是否响应
           shell: |

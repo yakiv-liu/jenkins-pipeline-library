@@ -209,7 +209,8 @@ class NotificationTools implements Serializable {
             steps.emailext(
                     subject: subject,
                     body: body,
-                    to: config.recipients
+                    to: config.recipients,
+                    mimeType: 'text/html'
             )
 
             steps.echo "✅ 部署通知邮件发送成功"
@@ -254,7 +255,8 @@ class NotificationTools implements Serializable {
             steps.emailext(
                     subject: subject,
                     body: body,
-                    to: config.recipients
+                    to: config.recipients,
+                    mimeType: 'text/html'
             )
 
             steps.echo "✅ 回滚通知邮件发送成功"
