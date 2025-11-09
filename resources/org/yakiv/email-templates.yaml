@@ -1,0 +1,99 @@
+# 邮件模板配置
+templates:
+  pipeline:
+    subject: "[{status}] {project} - {environment} - {pipelineType}"
+    body: |
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <meta charset="UTF-8">
+          <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+              .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+              .header { background: {headerColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+              .content { padding: 25px; line-height: 1.6; }
+              .info-item { margin: 12px 0; padding: 8px 0; border-bottom: 1px solid #eee; }
+              .status-badge { display: inline-block; padding: 4px 12px; border-radius: 4px; color: white; font-weight: bold; }
+              .footer { padding: 15px; text-align: center; background: #f9f9f9; border-radius: 0 0 8px 8px; font-size: 12px; color: #666; }
+              .button { display: inline-block; padding: 10px 20px; background: #007cba; color: white; text-decoration: none; border-radius: 4px; margin: 10px 0; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🚀 Pipeline {pipelineType}</h1>
+                  <p>{project} - {environment}</p>
+              </div>
+              <div class="content">
+                  <div class="info-item">
+                      <strong>📋 项目名称:</strong> {project}
+                  </div>
+                  <div class="info-item">
+                      <strong>🌍 环境:</strong> {environment}
+                  </div>
+                  <div class="info-item">
+                      <strong>🏷️ 版本:</strong> {version}
+                  </div>
+                  <div class="info-item">
+                      <strong>📊 状态:</strong> <span class="status-badge" style="background:{statusColor};">{status}</span>
+                  </div>
+                  <div class="info-item">
+                      <strong>🔗 构建链接:</strong> <a href="{buildUrl}">查看详情</a>
+                  </div>
+                  <div class="info-item">
+                      <strong>⏰ 时间:</strong> {timestamp}
+                  </div>
+                  {rollbackInfo}
+                  <div style="text-align: center; margin: 20px 0;">
+                      <a href="{buildUrl}" class="button">查看构建详情</a>
+                  </div>
+              </div>
+              <div class="footer">
+                  <p>此邮件由 Jenkins CI/CD 系统自动发送，请勿回复</p>
+                  <p>发送时间: {timestamp}</p>
+              </div>
+          </div>
+      </body>
+      </html>
+
+  build:
+    subject: "[{status}] Build - {project}"
+    body: |
+      <html>
+      <body>
+          <h2>Build Notification</h2>
+          <p><strong>Project:</strong> {project}</p>
+          <p><strong>Version:</strong> {version}</p>
+          <p><strong>Status:</strong> {status}</p>
+          <p><strong>Build URL:</strong> <a href="{buildUrl}">{buildUrl}</a></p>
+          <p><strong>Release:</strong> {isRelease}</p>
+      </body>
+      </html>
+
+  deploy:
+    subject: "[{status}] Deploy - {project} - {environment}"
+    body: |
+      <html>
+      <body>
+          <h2>Deploy Notification</h2>
+          <p><strong>Project:</strong> {project}</p>
+          <p><strong>Environment:</strong> {environment}</p>
+          <p><strong>Version:</strong> {version}</p>
+          <p><strong>Status:</strong> {status}</p>
+          <p><strong>Build URL:</strong> <a href="{buildUrl}">{buildUrl}</a></p>
+      </body>
+      </html>
+
+  rollback:
+    subject: "[{status}] Rollback - {project} - {environment}"
+    body: |
+      <html>
+      <body>
+          <h2>Rollback Notification</h2>
+          <p><strong>Project:</strong> {project}</p>
+          <p><strong>Environment:</strong> {environment}</p>
+          <p><strong>Rollback Version:</strong> {version}</p>
+          <p><strong>Status:</strong> {status}</p>
+          <p><strong>Build URL:</strong> <a href="{buildUrl}">{buildUrl}</a></p>
+      </body>
+      </html>

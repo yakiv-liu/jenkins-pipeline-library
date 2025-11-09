@@ -258,14 +258,16 @@ def call(Map userConfig = [:]) {
                             try {
                                 def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 备份目录已经在环境变量中设置为工作空间内的目录，无需创建
+                                // 确保备份目录存在
+                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
+
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
 
-                                // 写入部署日志
-                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log",
-                                        text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
-                                        append: true
+                                // === 修复点：使用 shell 命令追加日志文件 ===
+                                steps.sh """
+                                    echo "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
+                                """
 
                                 echo "部署记录已保存到: ${env.BACKUP_DIR}"
                             } catch (Exception e) {
@@ -302,14 +304,16 @@ def call(Map userConfig = [:]) {
                             try {
                                 def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 备份目录已经在环境变量中设置为工作空间内的目录，无需创建
+                                // 确保备份目录存在
+                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
+
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
 
-                                // 写入回滚日志
-                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log",
-                                        text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
-                                        append: true
+                                // === 修复点：使用 shell 命令追加日志文件 ===
+                                steps.sh """
+                                    echo "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log"
+                                """
 
                                 echo "回滚记录已保存到: ${env.BACKUP_DIR}"
                             } catch (Exception e) {

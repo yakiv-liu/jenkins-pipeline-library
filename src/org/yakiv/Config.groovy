@@ -2,9 +2,13 @@ package org.yakiv
 
 class Config implements Serializable {
     def steps
+    // === 修改点1：新增邮件模板缓存字段 ===
+    def emailTemplates
 
     Config(steps) {
         this.steps = steps
+        // === 修改点2：初始化时加载邮件模板 ===
+        this.emailTemplates = loadEmailTemplates()
     }
 
     // 加载配置 - 失败时直接报错
@@ -21,6 +25,58 @@ class Config implements Serializable {
             // 直接报错，不提供降级方案
             error "无法加载 YAML 配置文件: ${e.message}"
         }
+    }
+
+    // === 修改点3：新增邮件模板加载方法 ===
+    // 加载邮件模板配置 - 失败时只警告不报错
+    Map loadEmailTemplates() {
+        try {
+            // 使用 libraryResource 读取邮件模板文件
+            def yamlText = steps.libraryResource 'org/yakiv/email-templates.yaml'
+            def templates = steps.readYaml text: yamlText
+            steps.echo "✅ 成功加载邮件模板配置"
+            return templates
+        } catch (Exception e) {
+            // === 修改点4：只输出警告，不抛出异常，不提供备用模板 ===
+            steps.echo "⚠️ 警告：无法加载邮件模板配置文件: ${e.message}"
+            steps.echo "⚠️ 邮件将使用 NotificationTools 中的默认模板"
+            return null
+        }
+    }
+
+    // === 修改点5：新增邮件模板获取方法 ===
+    // 获取邮件模板 - 如果模板不存在返回 null
+    def getEmailTemplate(String templateName) {
+        if (!emailTemplates) {
+            return null
+        }
+        return emailTemplates?.templates?."${templateName}"
+    }
+
+    // === 修改点6：新增状态颜色获取方法 ===
+    // 获取状态对应的颜色
+    def getStatusColor(String status) {
+        def colors = [
+                'SUCCESS': '#28a745',
+                'FAILURE': '#dc3545',
+                'UNSTABLE': '#ffc107',
+                'ABORTED': '#6c757d',
+                'UNKNOWN': '#6c757d'
+        ]
+        return colors[status?.toUpperCase()] ?: '#6c757d'
+    }
+
+    // === 修改点7：新增头部颜色获取方法 ===
+    // 获取头部颜色
+    def getHeaderColor(String status) {
+        def colors = [
+                'SUCCESS': '#28a745',
+                'FAILURE': '#dc3545',
+                'UNSTABLE': '#ffc107',
+                'ABORTED': '#6c757d',
+                'UNKNOWN': '#6c757d'
+        ]
+        return colors[status?.toUpperCase()] ?: '#007cba'
     }
 
     // 获取配置值
