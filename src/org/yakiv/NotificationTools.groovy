@@ -99,7 +99,8 @@ class NotificationTools implements Serializable {
             steps.emailext(
                     subject: subject,
                     body: body,
-                    to: config.recipients
+                    to: config.recipients,
+                    mimeType: 'text/html'
             )
 
             steps.echo "✅ 邮件发送成功给: ${config.recipients}"
@@ -164,7 +165,8 @@ class NotificationTools implements Serializable {
             steps.emailext(
                     subject: subject,
                     body: body,
-                    to: config.recipients
+                    to: config.recipients,
+                    mimeType: 'text/html'
             )
 
             steps.echo "✅ 构建通知邮件发送成功"
