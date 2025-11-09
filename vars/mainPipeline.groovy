@@ -20,7 +20,8 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${configLoader.getHarborUrl()}"
             SONAR_URL = "${configLoader.getSonarUrl()}"
             TRIVY_URL = "${configLoader.getTrivyUrl()}"
-            BACKUP_DIR = "${configLoader.getBackupDir() ?: '/tmp/backups'}"  // === 修改点：添加默认值 ===
+            // === 修改点：使用 Jenkins 工作空间内的备份目录 ===
+            BACKUP_DIR = "${env.WORKSPACE}/backups"
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
@@ -252,14 +253,12 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：修复文件写入操作，添加异常处理 ===
+                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
                         script {
                             try {
                                 def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 确保备份目录存在
-                                steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
+                                // 备份目录已经在环境变量中设置为工作空间内的目录，无需创建
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
 
@@ -268,7 +267,7 @@ def call(Map userConfig = [:]) {
                                         text: "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}\n",
                                         append: true
 
-                                echo "部署记录已保存"
+                                echo "部署记录已保存到: ${env.BACKUP_DIR}"
                             } catch (Exception e) {
                                 echo "警告：部署记录保存失败: ${e.getMessage()}"
                                 // 不抛出异常，避免影响部署状态
@@ -298,14 +297,12 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：修复文件写入操作，添加异常处理 ===
+                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
                         script {
                             try {
                                 def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 确保备份目录存在
-                                steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
+                                // 备份目录已经在环境变量中设置为工作空间内的目录，无需创建
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
 
@@ -314,7 +311,7 @@ def call(Map userConfig = [:]) {
                                         text: "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}\n",
                                         append: true
 
-                                echo "回滚记录已保存"
+                                echo "回滚记录已保存到: ${env.BACKUP_DIR}"
                             } catch (Exception e) {
                                 echo "警告：回滚记录保存失败: ${e.getMessage()}"
                                 // 不抛出异常，避免影响回滚状态
@@ -357,7 +354,8 @@ def call(Map userConfig = [:]) {
                             isRollback: env.ROLLBACK.toBoolean()
                     )
 
-                    archiveArtifacts artifacts: 'deployment-manifest.json,trivy-report.html', fingerprint: true
+                    // === 修改点：添加备份文件到归档 ===
+                    archiveArtifacts artifacts: 'deployment-manifest.json,trivy-report.html,backups/*', fingerprint: true
                     publishHTML([
                             allowMissing: false,
                             alwaysLinkToLastBuild: true,
