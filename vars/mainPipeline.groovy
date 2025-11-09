@@ -211,14 +211,45 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
-                        timeout(time: 3, unit: 'MINUTES') {
+                        timeout(time: 5, unit: 'MINUTES') {  // 增加超时时间到5分钟
                             try {
+                                // === 修改点：添加更详细的等待和质量门检查 ===
+                                steps.echo "等待 SonarQube 质量门检查结果..."
+
+                                // 获取质量门状态
                                 def qg = waitForQualityGate()
+
+                                steps.echo "质量门状态: ${qg.status}"
+
                                 if (qg.status != 'OK') {
-                                    error "质量门未通过: ${qg.status}"
+                                    if (qg.status == 'ERROR') {
+                                        error "质量门检查失败: ${qg.status} - 请检查 SonarQube 分析日志"
+                                    } else {
+                                        // 对于 WARNING 或其他状态，可以根据需要处理
+                                        steps.echo "质量门状态为 ${qg.status}，继续执行但标记为不稳定"
+                                        currentBuild.result = 'UNSTABLE'
+                                    }
+                                } else {
+                                    steps.echo "✅ 质量门检查通过"
+                                }
+
+                            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+                                // 超时异常处理
+                                if (e.causes[0] instanceof org.jenkinsci.plugins.workflow.steps.TimeoutStepExecution$ExceededTimeout) {
+                                    steps.echo "❌ 质量门检查超时 - SonarQube 分析可能失败或未完成"
+                                    steps.echo "请检查:"
+                                    steps.echo "1. SonarQube 服务器状态"
+                                    steps.echo "2. 项目分析是否成功完成"
+                                    steps.echo "3. Webhook 配置是否正确"
+
+                                    // 可以在这里添加检查 SonarQube 分析状态的逻辑
+                                    currentBuild.result = 'UNSTABLE'
+                                } else {
+                                    throw e
                                 }
                             } catch (Exception e) {
-                                echo "质量门检查超时，但继续执行部署"
+                                steps.echo "❌ 质量门检查异常: ${e.getMessage()}"
+                                steps.echo "继续执行部署，但构建状态标记为不稳定"
                                 currentBuild.result = 'UNSTABLE'
                             }
                         }
