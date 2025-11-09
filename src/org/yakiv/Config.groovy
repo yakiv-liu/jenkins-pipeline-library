@@ -2,13 +2,12 @@ package org.yakiv
 
 class Config implements Serializable {
     def steps
-    // === 修改点1：新增邮件模板缓存字段 ===
-    def emailTemplates
+    // === 修改点1：移除构造函数中的初始化，改为懒加载 ===
+    def emailTemplates = null
 
     Config(steps) {
         this.steps = steps
-        // === 修改点2：初始化时加载邮件模板 ===
-        this.emailTemplates = loadEmailTemplates()
+        // === 修改点2：移除构造函数中的 loadEmailTemplates() 调用 ===
     }
 
     // 加载配置 - 失败时直接报错
@@ -27,33 +26,42 @@ class Config implements Serializable {
         }
     }
 
-    // === 修改点3：新增邮件模板加载方法 ===
+    // === 修改点3：将邮件模板加载改为私有方法，并添加同步检查 ===
     // 加载邮件模板配置 - 失败时只警告不报错
-    Map loadEmailTemplates() {
+    private synchronized Map loadEmailTemplates() {
+        if (emailTemplates != null) {
+            return emailTemplates
+        }
+
         try {
             // 使用 libraryResource 读取邮件模板文件
             def yamlText = steps.libraryResource 'org/yakiv/email-templates.yaml'
-            def templates = steps.readYaml text: yamlText
+            emailTemplates = steps.readYaml text: yamlText
             steps.echo "✅ 成功加载邮件模板配置"
-            return templates
+            return emailTemplates
         } catch (Exception e) {
-            // === 修改点4：只输出警告，不抛出异常，不提供备用模板 ===
+            // 只输出警告，不抛出异常，不提供备用模板
             steps.echo "⚠️ 警告：无法加载邮件模板配置文件: ${e.message}"
             steps.echo "⚠️ 邮件将使用 NotificationTools 中的默认模板"
-            return null
+            emailTemplates = [:] // 设置为空Map，避免重复加载
+            return emailTemplates
         }
     }
 
-    // === 修改点5：新增邮件模板获取方法 ===
+    // === 修改点4：修改邮件模板获取方法，实现懒加载 ===
     // 获取邮件模板 - 如果模板不存在返回 null
     def getEmailTemplate(String templateName) {
-        if (!emailTemplates) {
+        if (emailTemplates == null) {
+            loadEmailTemplates()
+        }
+
+        if (!emailTemplates || emailTemplates.isEmpty()) {
             return null
         }
         return emailTemplates?.templates?."${templateName}"
     }
 
-    // === 修改点6：新增状态颜色获取方法 ===
+    // === 修改点5：新增状态颜色获取方法 ===
     // 获取状态对应的颜色
     def getStatusColor(String status) {
         def colors = [
@@ -66,7 +74,7 @@ class Config implements Serializable {
         return colors[status?.toUpperCase()] ?: '#6c757d'
     }
 
-    // === 修改点7：新增头部颜色获取方法 ===
+    // === 修改点6：新增头部颜色获取方法 ===
     // 获取头部颜色
     def getHeaderColor(String status) {
         def colors = [

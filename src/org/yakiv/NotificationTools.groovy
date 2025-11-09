@@ -18,8 +18,11 @@ class NotificationTools implements Serializable {
             def status = config.status ?: 'UNKNOWN'
             def finalStatus = (status == null) ? 'SUCCESS' : status
 
-            // 获取邮件模板
-            def template = configLoader?.getEmailTemplate('pipeline')
+            // 获取邮件模板 - 添加空值检查
+            def template = null
+            if (configLoader != null) {
+                template = configLoader.getEmailTemplate('pipeline')
+            }
 
             def subject, body
 
