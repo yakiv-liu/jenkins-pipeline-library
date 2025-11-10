@@ -8,9 +8,9 @@ def call(Map userConfig = [:]) {
     }
 
     // 检查分支 - 如果不是main分支则中止（可选）
-    if (env.BRANCH_NAME != 'main') {
-        error "🚫 main-pipeline 仅处理 main 分支推送事件。当前分支: ${env.BRANCH_NAME}"
-    }
+//    if (env.BRANCH_NAME != 'main') {
+//        error "🚫 main-pipeline 仅处理 main 分支推送事件。当前分支: ${env.BRANCH_NAME}"
+//    }
 
     echo "✅ 确认：这是 main 分支的推送事件，继续执行主流水线"
     pipeline {
