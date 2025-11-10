@@ -7,7 +7,7 @@ def call(Map userConfig = [:]) {
         }
 
         triggers {
-            githubPullRequest(
+            pullRequest(
                     org: config.org,
                     repo: config.repo,
                     branch: config.defaultBranch ?: 'main',
