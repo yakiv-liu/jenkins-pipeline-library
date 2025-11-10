@@ -28,9 +28,10 @@ def call(Map userConfig = [:]) {
         }
 
         environment {
-            NEXUS_URL = config.nexusUrl
-            SONAR_URL = config.sonarUrl
-            TRIVY_URL = config.trivyUrl
+            NEXUS_URL = "${config.nexusUrl}"
+            SONAR_URL = "${config.sonarUrl}"
+            TRIVY_URL = "${config.trivyUrl}"
+            HARBOR_URL = "${config.harborUrl}"
         }
 
         stages {
