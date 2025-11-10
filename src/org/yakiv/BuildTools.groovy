@@ -105,7 +105,6 @@ class BuildTools implements Serializable {
     }
 
     def runPRBuildAndTest() {
-        // 切换到项目目录
         steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
             steps.sh '''
             mvn clean compile test -T 1C \

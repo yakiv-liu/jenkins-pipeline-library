@@ -212,34 +212,32 @@ class SecurityTools implements Serializable {
     // === 修改点4：添加 skip 参数支持 ===
     def runPRSecurityScan(Map config, Boolean skipDependencyCheck = false) {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-            // === 修改点：确保 PR 扫描也使用 withSonarQubeEnv ===
             steps.withSonarQubeEnv('sonarqube') {
-                steps.dir(env.WORKSPACE) {
+                steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
-                        mvn sonar:sonar \\
-                        -Dsonar.projectKey=${config.projectName}-pr-${config.changeId} \\
-                        -Dsonar.projectName='${config.projectName} PR ${config.changeId}' \\
-                        -Dsonar.pullrequest.key=${config.changeId} \\
-                        -Dsonar.pullrequest.branch=${config.changeBranch} \\
-                        -Dsonar.pullrequest.base=${config.changeTarget} \\
-                        -Dsonar.sources=src/main/java \\
-                        -Dsonar.tests= \\
-                        -Dsonar.exclusions='**/test/**,**/target/**' \\
-                        -s \${MAVEN_SETTINGS}
-                    """
+                    mvn sonar:sonar \\
+                    -Dsonar.projectKey=${config.projectName}-pr-${config.changeId} \\
+                    -Dsonar.projectName='${config.projectName} PR ${config.changeId}' \\
+                    -Dsonar.pullrequest.key=${config.changeId} \\
+                    -Dsonar.pullrequest.branch=${config.changeBranch} \\
+                    -Dsonar.pullrequest.base=${config.changeTarget} \\
+                    -Dsonar.sources=src/main/java \\
+                    -Dsonar.tests=src/test/java \\
+                    -Dsonar.exclusions='**/test/**,**/target/**' \\
+                    -s \${MAVEN_SETTINGS}
+                """
                 }
             }
 
-            // === 修改点：根据 skipDependencyCheck 参数决定是否执行依赖检查 ===
             if (!skipDependencyCheck) {
-                steps.dir(env.WORKSPACE) {
+                steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
                     steps.sh """
-                        mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
-                        -DdependencyCheck.failBuildOnCVSS=9
-                    """
+                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
+                    -DdependencyCheck.failBuildOnCVSS=9
+                """
                     steps.sh """
-                        mvn spotbugs:spotbugs -DskipTests -s \${MAVEN_SETTINGS}
-                    """
+                    mvn spotbugs:spotbugs -DskipTests -s \${MAVEN_SETTINGS}
+                """
                     steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif .'
                 }
             } else {

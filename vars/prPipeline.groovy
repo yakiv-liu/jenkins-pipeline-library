@@ -6,20 +6,8 @@ def call(Map userConfig = [:]) {
             label config.agentLabel
         }
 
-        triggers {
-            pullRequest(
-                    org: config.org,
-                    repo: config.repo,
-                    branch: config.defaultBranch ?: 'main',
-                    triggerPhrase: '.*test.*',
-                    onlyTriggerPhrase: false,
-                    githubApiUrl: 'https://api.github.com',
-                    successComment: 'PR验证通过，可以合并',
-                    failureComment: 'PR验证失败，请检查构建日志',
-                    skipFirstBuild: false,
-                    cancelBuildsOnUpdate: true
-            )
-        }
+        // 移除无效的 triggers 块，改为通过 GitHub webhook 触发
+        // triggers 配置应该在 Jenkinsfile 或 Jenkins 任务配置中设置
 
         options {
             timeout(time: 30, unit: 'MINUTES')
@@ -32,27 +20,33 @@ def call(Map userConfig = [:]) {
             SONAR_URL = "${config.sonarUrl}"
             TRIVY_URL = "${config.trivyUrl}"
             HARBOR_URL = "${config.harborUrl}"
+            PROJECT_DIR = "src"  // 添加项目目录环境变量
         }
 
         stages {
             stage('Checkout PR') {
                 steps {
-                    checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
-                            extensions: [
-                                    [$class: 'CleanCheckout'],
-                                    [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
-                            ],
-                            userRemoteConfigs: [[
-                                                        refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
-                                                        url: "https://github.com/${config.org}/${config.repo}.git",
-                                                        credentialsId: 'github-token'
-                                                ]]
-                    ])
+                    script {
+                        // 使用 checkout scm 来获取 PR 代码
+                        checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
+                                extensions: [
+                                        [$class: 'CleanCheckout'],
+                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
+                                ],
+                                userRemoteConfigs: [[
+                                                            refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
+                                                            url: "https://github.com/${config.org}/${config.repo}.git",
+                                                            credentialsId: 'github-token'
+                                                    ]]
+                        ])
 
-                    dir('src') {
-                        sh 'git log -1 --oneline'
+                        dir('src') {
+                            sh 'git log -1 --oneline'
+                            // 设置项目目录环境变量
+                            env.PROJECT_DIR = "src"
+                        }
                     }
                 }
             }
@@ -63,7 +57,6 @@ def call(Map userConfig = [:]) {
                         steps {
                             dir('src') {
                                 script {
-                                    // 修正：正确传递 steps 和 env
                                     def securityTools = new org.yakiv.SecurityTools(steps, env)
                                     securityTools.runPRSecurityScan(
                                             projectName: config.projectName,
@@ -75,13 +68,27 @@ def call(Map userConfig = [:]) {
                             }
                         }
                         post {
+                            always {
+                                script {
+                                    // 发布安全扫描报告
+                                    publishHTML([
+                                            allowMissing: true,
+                                            alwaysLinkToLastBuild: true,
+                                            keepAll: true,
+                                            reportDir: 'src/target',
+                                            reportFiles: 'dependency-check-report.html,trivy-report.html',
+                                            reportName: '安全扫描报告'
+                                    ])
+                                }
+                            }
                             success {
                                 script {
+                                    // 更新 GitHub 状态
                                     updateGitHubCommitStatus(
                                             state: 'SUCCESS',
                                             context: 'security-scan',
                                             description: '安全扫描通过',
-                                            targetUrl: "${env.BUILD_URL}"
+                                            targetUrl: "${env.BUILD_URL}security-scan/"
                                     )
                                 }
                             }
@@ -91,7 +98,7 @@ def call(Map userConfig = [:]) {
                                             state: 'FAILURE',
                                             context: 'security-scan',
                                             description: '安全扫描失败',
-                                            targetUrl: "${env.BUILD_URL}"
+                                            targetUrl: "${env.BUILD_URL}security-scan/"
                                     )
                                 }
                             }
@@ -102,25 +109,18 @@ def call(Map userConfig = [:]) {
                         steps {
                             dir('src') {
                                 script {
-                                    // 修正：正确传递 steps 和 env
                                     def buildTools = new org.yakiv.BuildTools(steps, env)
                                     buildTools.runPRBuildAndTest()
                                 }
                             }
                         }
                         post {
-                            success {
+                            always {
                                 script {
-                                    updateGitHubCommitStatus(
-                                            state: 'SUCCESS',
-                                            context: 'build',
-                                            description: '构建测试通过',
-                                            targetUrl: "${env.BUILD_URL}"
-                                    )
-
-                                    junit 'src/target/surefire-reports/*.xml'
+                                    // 发布测试报告
+                                    junit allowEmptyResults: true, testResults: 'src/target/surefire-reports/*.xml'
                                     publishHTML([
-                                            allowMissing: false,
+                                            allowMissing: true,
                                             alwaysLinkToLastBuild: true,
                                             keepAll: true,
                                             reportDir: 'src/target/site',
@@ -129,13 +129,23 @@ def call(Map userConfig = [:]) {
                                     ])
                                 }
                             }
+                            success {
+                                script {
+                                    updateGitHubCommitStatus(
+                                            state: 'SUCCESS',
+                                            context: 'build',
+                                            description: '构建测试通过',
+                                            targetUrl: "${env.BUILD_URL}testReport/"
+                                    )
+                                }
+                            }
                             failure {
                                 script {
                                     updateGitHubCommitStatus(
                                             state: 'FAILURE',
                                             context: 'build',
                                             description: '构建测试失败',
-                                            targetUrl: "${env.BUILD_URL}"
+                                            targetUrl: "${env.BUILD_URL}testReport/"
                                     )
                                 }
                             }
@@ -146,13 +156,11 @@ def call(Map userConfig = [:]) {
 
             stage('Quality Gate') {
                 steps {
-                    dir('src') {
-                        script {
-                            timeout(time: 10, unit: 'MINUTES') {
-                                def qg = waitForQualityGate()
-                                if (qg.status != 'OK') {
-                                    error "质量门未通过: ${qg.status}"
-                                }
+                    script {
+                        timeout(time: 10, unit: 'MINUTES') {
+                            def qg = waitForQualityGate()
+                            if (qg.status != 'OK') {
+                                error "质量门未通过: ${qg.status}"
                             }
                         }
                     }
@@ -185,13 +193,46 @@ def call(Map userConfig = [:]) {
         post {
             always {
                 script {
-                    if (currentBuild.result == 'SUCCESS') {
-                        githubPRComment comment: "✅ PR验证通过！所有检查均成功完成。\n\n- ✅ 安全扫描通过\n- ✅ 构建测试通过\n- ✅ 质量门检查通过\n\n构建详情: ${env.BUILD_URL}"
-                    } else if (currentBuild.result == 'FAILURE') {
-                        githubPRComment comment: "❌ PR验证失败！请检查以下问题：\n\n- 🔍 查看构建日志: ${env.BUILD_URL}\n- 📊 查看测试报告: ${env.BUILD_URL}testReport/\n- 🛡️ 查看安全扫描结果: ${config.sonarUrl}/dashboard?id=${config.projectName}-pr-${env.CHANGE_ID}"
-                    }
-
+                    // 清理工作空间
                     cleanWs()
+                }
+            }
+            success {
+                script {
+                    // PR 成功评论
+                    if (env.CHANGE_ID) {
+                        githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
+                            - ✅ 安全扫描通过
+                            - ✅ 构建测试通过  
+                            - ✅ 质量门检查通过
+                            构建详情: ${env.BUILD_URL}
+                        """
+                    }
+                }
+            }
+            failure {
+                script {
+                    // PR 失败评论
+                    if (env.CHANGE_ID) {
+                        githubPRComment comment: """ ❌ PR验证失败！请检查以下问题：
+                            - 🔍 查看构建日志: ${env.BUILD_URL}
+                            - 📊 查看测试报告: ${env.BUILD_URL}testReport/
+                            - 🛡️ 查看安全扫描结果: ${env.BUILD_URL}security-scan/
+                            **重要**: 只有质量门禁和安全扫描通过才允许合并（force merge 除外）。
+                        """
+                    }
+                }
+            }
+            unstable {
+                script {
+                    // PR 不稳定评论
+                    if (env.CHANGE_ID) {
+                        githubPRComment comment: """⚠️ PR验证不稳定！部分检查未通过。
+                            - 📊 查看测试报告: ${env.BUILD_URL}testReport/
+                            - 🛡️ 查看安全扫描结果: ${env.BUILD_URL}security-scan/
+                            请检查相关问题后重试。
+                        """
+                    }
                 }
             }
         }
