@@ -214,6 +214,18 @@ class SecurityTools implements Serializable {
         steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
             steps.withSonarQubeEnv('sonarqube') {
                 steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                    // 根据扫描强度调整参数
+                    def sonarExclusions = '**/test/**,**/target/**'
+                    def sonarSources = 'src/main/java'
+
+                    if (config.scanIntensity == 'fast') {
+                        sonarExclusions += ',**/*.md,**/*.json,**/*.xml'
+                        steps.echo "🔍 快速扫描模式：跳过文档和配置文件"
+                    } else if (config.scanIntensity == 'deep') {
+                        sonarSources += ',src/test/java'
+                        steps.echo "🔍 深度扫描模式：包含测试代码分析"
+                    }
+
                     steps.sh """
                     mvn sonar:sonar \\
                     -Dsonar.projectKey=${config.projectName}-pr-${config.changeId} \\
@@ -221,9 +233,8 @@ class SecurityTools implements Serializable {
                     -Dsonar.pullrequest.key=${config.changeId} \\
                     -Dsonar.pullrequest.branch=${config.changeBranch} \\
                     -Dsonar.pullrequest.base=${config.changeTarget} \\
-                    -Dsonar.sources=src/main/java \\
-                    -Dsonar.tests=src/test/java \\
-                    -Dsonar.exclusions='**/test/**,**/target/**' \\
+                    -Dsonar.sources=${sonarSources} \\
+                    -Dsonar.exclusions='${sonarExclusions}' \\
                     -s \${MAVEN_SETTINGS}
                 """
                 }

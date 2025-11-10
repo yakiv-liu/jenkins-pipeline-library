@@ -6,13 +6,12 @@ def call(Map userConfig = [:]) {
             label config.agentLabel
         }
 
-        // 移除无效的 triggers 块，改为通过 GitHub webhook 触发
-        // triggers 配置应该在 Jenkinsfile 或 Jenkins 任务配置中设置
-
         options {
             timeout(time: 30, unit: 'MINUTES')
             buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '8'))
             disableConcurrentBuilds()
+            // 添加 GitHub 项目链接
+            githubProjectProperty(projectUrlStr: "https://github.com/${config.org}/${config.repo}/")
         }
 
         environment {
@@ -20,20 +19,21 @@ def call(Map userConfig = [:]) {
             SONAR_URL = "${config.sonarUrl}"
             TRIVY_URL = "${config.trivyUrl}"
             HARBOR_URL = "${config.harborUrl}"
-            PROJECT_DIR = "src"  // 添加项目目录环境变量
+            PROJECT_DIR = "src"
+            SCAN_INTENSITY = "${config.scanIntensity ?: 'standard'}"
         }
 
         stages {
             stage('Checkout PR') {
                 steps {
                     script {
-                        // 使用 checkout scm 来获取 PR 代码
                         checkout([
                                 $class: 'GitSCM',
                                 branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
                                 extensions: [
                                         [$class: 'CleanCheckout'],
-                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
+                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src'],
+                                        [$class: 'LocalBranch', localBranch: 'PR-${CHANGE_ID}']
                                 ],
                                 userRemoteConfigs: [[
                                                             refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
@@ -44,9 +44,15 @@ def call(Map userConfig = [:]) {
 
                         dir('src') {
                             sh 'git log -1 --oneline'
-                            // 设置项目目录环境变量
-                            env.PROJECT_DIR = "src"
                         }
+
+                        // 调试信息
+                        echo "PR Environment Variables:"
+                        echo "CHANGE_ID: ${env.CHANGE_ID}"
+                        echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
+                        echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+                        echo "SCAN_INTENSITY: ${env.SCAN_INTENSITY}"
+                        echo "SKIP_DEPENDENCY_CHECK: ${config.skipDependencyCheck}"
                     }
                 }
             }
@@ -62,7 +68,9 @@ def call(Map userConfig = [:]) {
                                             projectName: config.projectName,
                                             changeId: env.CHANGE_ID,
                                             changeBranch: env.CHANGE_BRANCH,
-                                            changeTarget: env.CHANGE_TARGET
+                                            changeTarget: env.CHANGE_TARGET,
+                                            skipDependencyCheck: config.skipDependencyCheck,
+                                            scanIntensity: env.SCAN_INTENSITY
                                     )
                                 }
                             }
@@ -83,7 +91,6 @@ def call(Map userConfig = [:]) {
                             }
                             success {
                                 script {
-                                    // 更新 GitHub 状态
                                     updateGitHubCommitStatus(
                                             state: 'SUCCESS',
                                             context: 'security-scan',
@@ -199,39 +206,49 @@ def call(Map userConfig = [:]) {
             }
             success {
                 script {
-                    // PR 成功评论
                     if (env.CHANGE_ID) {
+                        // PR 成功评论
                         githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
-                            - ✅ 安全扫描通过
-                            - ✅ 构建测试通过  
-                            - ✅ 质量门检查通过
-                            构建详情: ${env.BUILD_URL}
-                        """
+
+                        📊 **构建详情**: ${env.BUILD_URL}
+                        
+                        ### 检查结果:
+                        - ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
+                        - ✅ 构建测试通过  
+                        - ✅ 质量门检查通过
+                        - ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
+                        
+                        **注意**: 只有通过所有质量检查才允许合并。"""
                     }
                 }
             }
             failure {
                 script {
-                    // PR 失败评论
                     if (env.CHANGE_ID) {
-                        githubPRComment comment: """ ❌ PR验证失败！请检查以下问题：
-                            - 🔍 查看构建日志: ${env.BUILD_URL}
-                            - 📊 查看测试报告: ${env.BUILD_URL}testReport/
-                            - 🛡️ 查看安全扫描结果: ${env.BUILD_URL}security-scan/
-                            **重要**: 只有质量门禁和安全扫描通过才允许合并（force merge 除外）。
-                        """
+                        // PR 失败评论
+                        githubPRComment comment: """❌ PR验证失败！请检查以下问题：
+
+                        📊 **构建详情**: ${env.BUILD_URL}
+                        
+                        ### 失败项目:
+                        - 🔍 查看构建日志: ${env.BUILD_URL}console
+                        - 🛡️ 安全扫描结果: ${env.BUILD_URL}security-scan/
+                        - ⚗️ 测试报告: ${env.BUILD_URL}testReport/
+                        - 📈 质量门结果: ${config.sonarUrl}/dashboard?id=${config.projectName}-pr-${env.CHANGE_ID}
+                        
+                        **重要**: 此PR未通过质量门禁，只允许force merge。"""
                     }
                 }
             }
             unstable {
                 script {
-                    // PR 不稳定评论
                     if (env.CHANGE_ID) {
+                        // PR 不稳定评论
                         githubPRComment comment: """⚠️ PR验证不稳定！部分检查未通过。
-                            - 📊 查看测试报告: ${env.BUILD_URL}testReport/
-                            - 🛡️ 查看安全扫描结果: ${env.BUILD_URL}security-scan/
-                            请检查相关问题后重试。
-                        """
+
+                        📊 **构建详情**: ${env.BUILD_URL}
+                        
+                        请检查测试报告和安全扫描结果，修复问题后重新触发构建。"""
                     }
                 }
             }
