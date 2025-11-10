@@ -23,7 +23,7 @@ def call(Map userConfig = [:]) {
 
         options {
             timeout(time: 30, unit: 'MINUTES')
-            buildDiscarder(logRotator(numToKeepStr: '10'))
+            buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '8'))
             disableConcurrentBuilds()
         }
 
