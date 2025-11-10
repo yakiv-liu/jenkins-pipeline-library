@@ -1,6 +1,13 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
+    // 检查构建类型 - 如果不是PR事件则中止
+    if (!env.CHANGE_ID) {
+        error "🚫 pr-pipeline 仅处理 Pull Request 事件。当前构建不是PR触发的。"
+    }
 
+    echo "✅ 确认：这是 PR #${env.CHANGE_ID} 事件，继续执行PR流水线"
+    echo "PR 源分支: ${env.CHANGE_BRANCH}"
+    echo "PR 目标分支: ${env.CHANGE_TARGET}"
     pipeline {
         agent {
             label config.agentLabel
