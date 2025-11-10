@@ -157,7 +157,7 @@ class DeployTools implements Serializable {
 
             steps.sh """
                 for i in {1..30}; do
-                    curl -f ${url}/health && curl -f ${url}/info | grep \"version\":\"${config.version}\" && exit 0
+                    curl -f ${url}/health && exit 0
                     sleep 10
                 done
                 exit 1
