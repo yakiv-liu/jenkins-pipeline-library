@@ -61,7 +61,7 @@
             state: started
             restart_policy: always
             ports:
-              - "{{ app_port }}:8080"
+              - "{{ app_port }}:{{ app_port }}"
             env:
               SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
               JAVA_OPTS: "-Xmx512m -Xms256m -Dapp.version={{ app_version }} -Dapp.env={{ deploy_env }}"
