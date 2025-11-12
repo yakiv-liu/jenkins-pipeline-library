@@ -2,17 +2,10 @@ def call(Map userConfig = [:]) {
     // 初始化配置加载器
     def configLoader = new org.yakiv.Config(steps)
     def config = configLoader.mergeConfig(userConfig)
-    // 检查构建类型 - 如果是PR事件则中止
-    if (env.CHANGE_ID) {
-        error "🚫 main-pipeline 仅处理分支推送事件，PR事件应由 pr-pipeline 处理。当前构建: PR #${env.CHANGE_ID}"
-    }
 
-    // 检查分支 - 如果不是main分支则中止（可选）
-//    if (env.BRANCH_NAME != 'main') {
-//        error "🚫 main-pipeline 仅处理 main 分支推送事件。当前分支: ${env.BRANCH_NAME}"
-//    }
+    // ========== 修改点1：移除严格的PR检查，因为路由已在Jenkinsfile中处理 ==========
+    echo "✅ 开始执行 main pipeline - 分支: ${env.BRANCH_NAME}"
 
-    echo "✅ 确认：这是 main 分支的推送事件，继续执行主流水线"
     pipeline {
         agent {
             label config.agentLabel
@@ -38,8 +31,8 @@ def call(Map userConfig = [:]) {
             VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
             APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-            // 添加项目目录环境变量
-            PROJECT_DIR = "${config.projectName}"
+            // ========== 修改点2：项目目录改为当前目录 ==========
+            PROJECT_DIR = "."
 
             // === 新增环境变量：跳过依赖检查标志 ===
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
@@ -92,37 +85,12 @@ def call(Map userConfig = [:]) {
 
             stage('Checkout & Setup') {
                 steps {
-                    // 1. 检出 Pipeline 脚本的 SCM (已经由 Jenkins 自动完成)
-                    checkout scm
-
-                    // 2. 额外检出实际的项目代码
                     script {
-                        def projectRepoUrl = env.PROJECT_REPO_URL
+                        // ========== 修改点3：不再需要检出代码，因为Jenkinsfile在项目仓库中 ==========
+                        echo "✅ 代码已自动检出（Jenkinsfile在项目仓库中）"
 
-                        echo "开始检出项目代码..."
-                        echo "仓库 URL: ${projectRepoUrl}"
-                        echo "分支: ${env.PROJECT_BRANCH}"
-                        echo "凭据 ID: github-ssh-key-slave"
-                        echo "目标目录: ${env.PROJECT_NAME}"
-
-                        // 检出实际项目代码到项目名目录，使用动态分支
-                        checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${env.PROJECT_BRANCH}"]],
-                                extensions: [
-                                        [
-                                                $class: 'RelativeTargetDirectory',
-                                                relativeTargetDir: env.PROJECT_NAME
-                                        ]
-                                ],
-                                userRemoteConfigs: [[
-                                                            url: projectRepoUrl,
-                                                            credentialsId: 'github-ssh-key-slave'
-                                                    ]]
-                        ])
-
-                        // 设置项目目录环境变量
-                        env.PROJECT_DIR = env.PROJECT_NAME
+                        // 设置项目目录环境变量（已在environment块中设置）
+                        // env.PROJECT_DIR = "."
 
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                         writeJSON file: 'deployment-manifest.json', json: [
@@ -141,17 +109,16 @@ def call(Map userConfig = [:]) {
                             echo "=== 工作空间结构 ==="
                             echo "当前目录: \$(pwd)"
                             ls -la
-                            echo "=== 实际项目代码目录 ==="
-                            ls -la ${env.PROJECT_DIR}/
                             echo "=== 检查 pom.xml ==="
-                            ls -la ${env.PROJECT_DIR}/pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
+                            ls -la pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
                             echo "=== 检查分支信息 ==="
-                            cd ${env.PROJECT_DIR} && git branch -a && echo "当前分支:" && git branch --show-current
+                            git branch -a && echo "当前分支:" && git branch --show-current
                         """
                     }
                 }
             }
 
+            // ========== 修改点4：移除原有的额外检出步骤，其他阶段保持不变 ==========
             stage('Build & Security Scan') {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
