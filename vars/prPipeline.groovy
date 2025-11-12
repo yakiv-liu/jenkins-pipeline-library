@@ -1,13 +1,22 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
-    // 检查构建类型 - 如果不是PR事件则中止
+
+    // ========== 修改点3：移除严格的环境变量检查，改为友好提示 ==========
+    echo "=== PR Pipeline 详细检测 ==="
+    echo "CHANGE_ID: ${env.CHANGE_ID}"
+    echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
+    echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+
+    // 如果不是 PR 事件，给出友好提示但不报错
     if (!env.CHANGE_ID) {
-        error "🚫 pr-pipeline 仅处理 Pull Request 事件。当前构建不是PR触发的。"
+        echo "⚠️ 警告：当前构建没有 CHANGE_ID，可能不是标准的 PR 事件"
+        echo "将继续执行，但某些功能可能无法正常工作"
+    } else {
+        echo "✅ 确认：这是 PR #${env.CHANGE_ID} 事件，继续执行PR流水线"
+        echo "PR 源分支: ${env.CHANGE_BRANCH}"
+        echo "PR 目标分支: ${env.CHANGE_TARGET}"
     }
 
-    echo "✅ 确认：这是 PR #${env.CHANGE_ID} 事件，继续执行PR流水线"
-    echo "PR 源分支: ${env.CHANGE_BRANCH}"
-    echo "PR 目标分支: ${env.CHANGE_TARGET}"
     pipeline {
         agent {
             label config.agentLabel
@@ -34,6 +43,9 @@ def call(Map userConfig = [:]) {
             stage('Checkout PR') {
                 steps {
                     script {
+                        // ========== 修改点4：增强 PR 检出逻辑 ==========
+                        echo "开始检出 PR 代码..."
+
                         checkout([
                                 $class: 'GitSCM',
                                 branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
@@ -213,6 +225,7 @@ def call(Map userConfig = [:]) {
             }
             success {
                 script {
+                    // ========== 修改点5：只在有 CHANGE_ID 时发送评论 ==========
                     if (env.CHANGE_ID) {
                         // PR 成功评论
                         githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
@@ -226,6 +239,8 @@ def call(Map userConfig = [:]) {
                         - ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
                         
                         **注意**: 只有通过所有质量检查才允许合并。"""
+                    } else {
+                        echo "没有 CHANGE_ID，跳过 PR 评论"
                     }
                 }
             }
