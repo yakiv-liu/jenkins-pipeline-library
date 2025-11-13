@@ -40,7 +40,7 @@ def call(Map userConfig = [:]) {
             buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '8'))
             disableConcurrentBuilds()
             githubProjectProperty(projectUrlStr: "https://github.com/${config.org}/${config.repo}/")
-            retry(3) // 构建失败时重试3次
+            retry(2) // 构建失败时重试2次
         }
 
         environment {
@@ -51,7 +51,9 @@ def call(Map userConfig = [:]) {
             PROJECT_DIR = "src"
             SCAN_INTENSITY = "${config.scanIntensity}"
             IS_PR = "${isPR}"
-            GIT_TIMEOUT = "10"
+            // ========== 修改点1：添加 SSH 相关配置 ==========
+            GIT_SSH_URL = "git@github.com:${config.org}/${config.repo}.git"
+            GIT_SSH_CREDENTIALS_ID = "github-ssh-key-slave" // 需要在 Jenkins 中配置的 SSH 凭据 ID
         }
 
         stages {
@@ -80,14 +82,15 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            stage('Checkout Code') {
+            stage('Checkout Code via SSH') {
                 steps {
                     script {
-                        echo "开始检出代码..."
+                        echo "开始通过 SSH 检出代码..."
+                        echo "SSH URL: ${env.GIT_SSH_URL}"
 
                         def checkoutSuccess = false
                         def retryCount = 0
-                        def maxRetries = 5
+                        def maxRetries = 3
 
                         while (!checkoutSuccess && retryCount < maxRetries) {
                             retryCount++
@@ -95,6 +98,7 @@ def call(Map userConfig = [:]) {
 
                             try {
                                 timeout(time: 5, unit: 'MINUTES') {
+                                    // ========== 修改点2：使用 SSH 方式检出 ==========
                                     checkout([
                                             $class: 'GitSCM',
                                             branches: [[name: env.BRANCH_NAME]],
@@ -109,20 +113,48 @@ def call(Map userConfig = [:]) {
                                                     [$class: 'LocalBranch', localBranch: '**']
                                             ],
                                             userRemoteConfigs: [[
-                                                                        url: "https://github.com/${config.org}/${config.repo}.git",
-                                                                        credentialsId: 'github-token',
-                                                                        timeout: 10
+                                                                        // ========== 修改点3：使用 SSH URL 和 SSH 凭据 ==========
+                                                                        url: env.GIT_SSH_URL,
+                                                                        credentialsId: env.GIT_SSH_CREDENTIALS_ID
                                                                 ]]
                                     ])
                                 }
                                 checkoutSuccess = true
-                                echo "✅ 代码检出成功"
+                                echo "✅ SSH 代码检出成功"
                             } catch (Exception e) {
-                                echo "⚠️ 代码检出失败 (第 ${retryCount} 次): ${e.message}"
-                                if (retryCount < maxRetries) {
-                                    sleep time: 10, unit: 'SECONDS'
+                                echo "⚠️ SSH 代码检出失败 (第 ${retryCount} 次): ${e.message}"
+
+                                // ========== 修改点4：如果 SSH 失败，回退到 HTTPS ==========
+                                if (retryCount == maxRetries) {
+                                    echo "⚠️ SSH 方式失败，尝试使用 HTTPS 方式..."
+                                    try {
+                                        timeout(time: 5, unit: 'MINUTES') {
+                                            checkout([
+                                                    $class: 'GitSCM',
+                                                    branches: [[name: env.BRANCH_NAME]],
+                                                    extensions: [
+                                                            [$class: 'CleanCheckout'],
+                                                            [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src'],
+                                                            [$class: 'CloneOption',
+                                                             timeout: 5,
+                                                             depth: 1,
+                                                             noTags: true,
+                                                             shallow: true],
+                                                            [$class: 'LocalBranch', localBranch: '**']
+                                                    ],
+                                                    userRemoteConfigs: [[
+                                                                                url: "https://github.com/${config.org}/${config.repo}.git",
+                                                                                credentialsId: 'github-token'
+                                                                        ]]
+                                            ])
+                                        }
+                                        checkoutSuccess = true
+                                        echo "✅ HTTPS 代码检出成功"
+                                    } catch (Exception httpsError) {
+                                        error "所有检出方式都失败: ${httpsError.message}"
+                                    }
                                 } else {
-                                    error "代码检出失败，已重试 ${maxRetries} 次"
+                                    sleep time: 5, unit: 'SECONDS'
                                 }
                             }
                         }
