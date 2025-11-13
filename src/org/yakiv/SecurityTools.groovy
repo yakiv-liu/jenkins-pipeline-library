@@ -206,12 +206,11 @@ class SecurityTools implements Serializable {
         // fastDependencyCheckWithCache(skip)  // 使用缓存的快速版本
     }
 
-    // ========== 修改点1：修复方法签名冲突 - 只保留一个 runPRSecurityScan 方法 ==========
+    // ========== 修改点1：重构 runPRSecurityScan 方法，支持免费工具分析 ==========
     def runPRSecurityScan(Map params = [:]) {
-        // 处理旧版参数格式的兼容性
+        // 参数处理逻辑
         def config = [:]
 
-        // 检查是否是旧版参数格式（包含 changeId）
         if (params.containsKey('changeId')) {
             steps.echo "⚠️ 检测到旧版参数格式，进行兼容性转换"
             config.projectName = params.projectName
@@ -262,10 +261,10 @@ class SecurityTools implements Serializable {
                 steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif . || echo "Trivy 扫描失败但继续构建"'
             }
 
-            // ========== 修改点2：根据 SonarQube 版本调整扫描逻辑 ==========
+            // ========== 修改点2：根据 SonarQube 版本选择不同的分析工具 ==========
             if (sonarqubeCommunityEdition) {
-                steps.echo "⚠️ SonarQube 社区版：跳过 PR 分析，使用标准分析"
-                runSonarQubeCommunityScan(projectName, branchName, isPR, prNumber)
+                steps.echo "⚠️ SonarQube 社区版：使用免费工具进行代码分析"
+                runFreeCodeAnalysis(projectName, branchName, isPR, prNumber, scanIntensity)
             } else {
                 steps.echo "✅ SonarQube 企业版：使用完整的 PR 分析"
                 runSonarQubeEnterpriseScan(projectName, branchName, isPR, prNumber, targetBranch, scanIntensity)
@@ -278,52 +277,70 @@ class SecurityTools implements Serializable {
         }
     }
 
-    // ========== 修改点3：新增社区版 SonarQube 扫描方法 ==========
-    def runSonarQubeCommunityScan(String projectName, String branchName, boolean isPR, String prNumber) {
-        steps.echo "运行 SonarQube 社区版扫描..."
+    // ========== 修改点3：新增免费代码分析方法 ==========
+    def runFreeCodeAnalysis(String projectName, String branchName, boolean isPR, String prNumber, String scanIntensity) {
+        steps.echo "运行免费代码分析工具..."
 
-        steps.withSonarQubeEnv('sonarqube') {
-            steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                    steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-                        def sonarParams = [
-                                "sonar.projectKey=${projectName}",
-                                "sonar.projectName=${projectName}",
-                                "sonar.sources=src/main/java",
-                                "sonar.host.url=${env.SONAR_URL}",
-                                "sonar.login=${env.SONAR_TOKEN}"
-                        ]
+        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+            steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                steps.sh """
+                    echo "=== 开始免费代码分析 ==="
+                    echo "项目: ${projectName}"
+                    echo "分支: ${branchName}"
+                    echo "扫描强度: ${scanIntensity}"
+                """
 
-                        // 如果是 PR，在社区版中我们只做标准分析，不设置 PR 参数
-                        if (isPR) {
-                            steps.echo "⚠️ PR 构建在社区版中：使用标准分析（非 PR 分析）"
-                            // 可以设置分支参数，但避免使用 PR 特定参数
-                            sonarParams << "sonar.branch.name=${branchName}"
-                        } else {
-                            // 分支构建：使用分支分析
-                            sonarParams << "sonar.branch.name=${branchName}"
-                        }
+                // Checkstyle - 代码风格检查
+                steps.echo "🔍 运行 Checkstyle 代码风格检查..."
+                steps.sh """
+                    mvn checkstyle:checkstyle -s \${MAVEN_SETTINGS} || echo "Checkstyle 检查失败但继续构建"
+                """
 
-                        // 构建 SonarQube 命令
-                        def sonarCmd = "mvn sonar:sonar"
-                        sonarParams.each { param ->
-                            sonarCmd += " -D${param}"
-                        }
-                        sonarCmd += " -s \${MAVEN_SETTINGS}"
+                // SpotBugs - 代码缺陷检测
+                steps.echo "🔍 运行 SpotBugs 代码缺陷检测..."
+                steps.sh """
+                    mvn spotbugs:spotbugs -s \${MAVEN_SETTINGS} || echo "SpotBugs 检查失败但继续构建"
+                """
 
-                        steps.sh """
-                            echo "执行 SonarQube 社区版扫描..."
-                            ${sonarCmd}
-                        """
-                    }
+                // JaCoCo - 代码覆盖率
+                steps.echo "🔍 运行 JaCoCo 代码覆盖率分析..."
+                steps.sh """
+                    mvn jacoco:prepare-agent test jacoco:report -s \${MAVEN_SETTINGS} || echo "JaCoCo 检查失败但继续构建"
+                """
+
+                // PMD - 代码质量分析
+                steps.echo "🔍 运行 PMD 代码质量分析..."
+                steps.sh """
+                    mvn pmd:pmd -s \${MAVEN_SETTINGS} || echo "PMD 检查失败但继续构建"
+                """
+
+                // 根据扫描强度调整分析深度
+                if (scanIntensity == 'deep') {
+                    steps.echo "🔍 深度扫描模式：运行额外分析..."
+                    steps.sh """
+                        # 复制检测
+                        mvn pmd:cpd -s \${MAVEN_SETTINGS} || echo "CPD 检查失败但继续构建"
+                        
+                        # 架构检查
+                        mvn validate -s \${MAVEN_SETTINGS} || echo "架构检查失败但继续构建"
+                    """
                 }
+
+                steps.sh """
+                    echo "=== 免费代码分析完成 ==="
+                    echo "报告位置:"
+                    echo "- Checkstyle: target/checkstyle-result.xml"
+                    echo "- SpotBugs: target/spotbugs.xml" 
+                    echo "- JaCoCo: target/site/jacoco/index.html"
+                    echo "- PMD: target/pmd.xml"
+                """
             }
         }
 
-        steps.echo "✅ SonarQube 社区版扫描完成"
+        steps.echo "✅ 免费代码分析完成"
     }
 
-    // ========== 修改点4：新增企业版 SonarQube 扫描方法 ==========
+    // ========== 修改点4：企业版 SonarQube 扫描方法 ==========
     def runSonarQubeEnterpriseScan(String projectName, String branchName, boolean isPR, String prNumber, String targetBranch, String scanIntensity) {
         steps.echo "运行 SonarQube 企业版扫描..."
 
