@@ -43,7 +43,8 @@ def call(Map userConfig = [:]) {
     env.SONAR_URL = "${config.sonarUrl}"
     env.TRIVY_URL = "${config.trivyUrl}"
     env.HARBOR_URL = "${config.harborUrl}"
-    env.PROJECT_DIR = "src"
+    // ========== 关键修改：修正项目目录路径 ==========
+    env.PROJECT_DIR = "."  // 改为当前目录，而不是 "src"
     env.SCAN_INTENSITY = "${config.scanIntensity}"
     env.IS_PR = "${isPR}"
     env.SOURCE_BRANCH = "${sourceBranch}"
@@ -57,27 +58,27 @@ def call(Map userConfig = [:]) {
         // 阶段 1: 安全扫描
         stage('Security Scan') {
             echo "🔍 开始安全扫描..."
-            dir('src') {
-                def securityTools = new org.yakiv.SecurityTools(steps, env)
-                securityTools.runPRSecurityScan(
-                        projectName: config.projectName,
-                        isPR: isPR,
-                        prNumber: prNumber,
-                        branchName: sourceBranch,
-                        targetBranch: targetBranch,
-                        skipDependencyCheck: config.skipDependencyCheck,
-                        scanIntensity: config.scanIntensity,
-                        // ========== 修改点2：传递社区版标志 ==========
-                        sonarqubeCommunityEdition: env.SONARQUBE_COMMUNITY_EDITION.toBoolean()
-                )
-            }
+            // ========== 关键修改：移除 dir('src') 包装 ==========
+            def securityTools = new org.yakiv.SecurityTools(steps, env)
+            securityTools.runPRSecurityScan(
+                    projectName: config.projectName,
+                    isPR: isPR,
+                    prNumber: prNumber,
+                    branchName: sourceBranch,
+                    targetBranch: targetBranch,
+                    skipDependencyCheck: config.skipDependencyCheck,
+                    scanIntensity: config.scanIntensity,
+                    // ========== 修改点2：传递社区版标志 ==========
+                    sonarqubeCommunityEdition: env.SONARQUBE_COMMUNITY_EDITION.toBoolean()
+            )
 
             // 发布安全扫描报告
             publishHTML([
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    reportDir: 'src/target',
+                    // ========== 关键修改：修正报告路径 ==========
+                    reportDir: 'target',
                     reportFiles: 'dependency-check-report.html,trivy-report.html',
                     reportName: '安全扫描报告'
             ])
@@ -87,7 +88,8 @@ def call(Map userConfig = [:]) {
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    reportDir: 'src/target/site',
+                    // ========== 关键修改：修正报告路径 ==========
+                    reportDir: 'target/site',
                     reportFiles: 'checkstyle.html,spotbugs.html,jacoco/index.html,pmd.html',
                     reportName: '代码质量报告'
             ])
@@ -96,18 +98,19 @@ def call(Map userConfig = [:]) {
         // 阶段 2: 构建和测试
         stage('Build & Test') {
             echo "🔨 开始构建和测试..."
-            dir('src') {
-                def buildTools = new org.yakiv.BuildTools(steps, env)
-                buildTools.runPRBuildAndTest()
-            }
+            // ========== 关键修改：移除 dir('src') 包装 ==========
+            def buildTools = new org.yakiv.BuildTools(steps, env)
+            buildTools.runPRBuildAndTest()
 
             // 发布测试报告
-            junit allowEmptyResults: true, testResults: 'src/target/surefire-reports/*.xml'
+            // ========== 关键修改：修正测试结果路径 ==========
+            junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
             publishHTML([
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    reportDir: 'src/target/site',
+                    // ========== 关键修改：修正报告路径 ==========
+                    reportDir: 'target/site',
                     reportFiles: 'surefire-report.html,jacoco/index.html',
                     reportName: '测试报告'
             ])
@@ -134,13 +137,12 @@ def call(Map userConfig = [:]) {
                 echo "- PMD: 代码质量分析"
 
                 // 这里可以添加免费工具的质量检查逻辑
-                dir('src') {
-                    sh '''
-                        echo "验证免费工具分析结果..."
-                        # 检查关键质量指标
-                        echo "免费工具质量检查完成"
-                    '''
-                }
+                // ========== 关键修改：移除 dir('src') 包装 ==========
+                sh '''
+                    echo "验证免费工具分析结果..."
+                    # 检查关键质量指标
+                    echo "免费工具质量检查完成"
+                '''
             }
         }
 
