@@ -1,25 +1,19 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
 
-    // ========== 修改点1：增强 PR 事件检测逻辑 ==========
-    echo "=== PR Pipeline 详细检测 ==="
-    echo "CHANGE_ID: ${env.CHANGE_ID}"
-    echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
-    echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+    echo "=== Pipeline 详细检测 ==="
     echo "BRANCH_NAME: ${env.BRANCH_NAME}"
     echo "GIT_BRANCH: ${env.GIT_BRANCH}"
 
-    // 检测多种 PR 标识
-    def isPR = env.CHANGE_ID || (env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')) || (env.GIT_BRANCH && env.GIT_BRANCH.contains('PR-'))
+    // ========== 修改点3：在共享库中也使用 BRANCH_NAME 判断 ==========
+    def isPR = env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')
 
-    if (!isPR) {
-        echo "⚠️ 警告：当前构建没有检测到 PR 事件的标准标识"
-        echo "将继续执行，但某些 PR 特定功能可能无法正常工作"
+    if (isPR) {
+        def prNumber = env.BRANCH_NAME.replace('PR-', '')
+        echo "✅ 确认：PR #${prNumber} 流水线"
+        config.prNumber = prNumber
     } else {
-        echo "✅ 确认：检测到 PR 事件，继续执行PR流水线"
-        if (env.CHANGE_ID) {
-            echo "PR #${env.CHANGE_ID} - ${env.CHANGE_BRANCH} -> ${env.CHANGE_TARGET}"
-        }
+        echo "✅ 确认：分支流水线 - ${env.BRANCH_NAME}"
     }
 
     pipeline {
@@ -31,7 +25,6 @@ def call(Map userConfig = [:]) {
             timeout(time: 30, unit: 'MINUTES')
             buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '8'))
             disableConcurrentBuilds()
-            // 添加 GitHub 项目链接
             githubProjectProperty(projectUrlStr: "https://github.com/${config.org}/${config.repo}/")
         }
 
@@ -42,17 +35,20 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${config.harborUrl}"
             PROJECT_DIR = "src"
             SCAN_INTENSITY = "${config.scanIntensity ?: 'standard'}"
+            // ========== 修改点4：设置 IS_PR 环境变量供后续步骤使用 ==========
+            IS_PR = "${isPR}"
         }
 
         stages {
-            stage('Checkout PR') {
+            stage('Checkout Code') {
                 steps {
                     script {
-                        echo "开始检出 PR 代码..."
+                        echo "开始检出代码..."
 
-                        // ========== 修改点2：改进 PR 检出逻辑，支持多种场景 ==========
-                        def checkoutConfig = [
+                        // ========== 修改点5：简化检出逻辑，Multibranch 会自动处理 ==========
+                        checkout([
                                 $class: 'GitSCM',
+                                branches: [[name: env.BRANCH_NAME]],
                                 extensions: [
                                         [$class: 'CleanCheckout'],
                                         [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
@@ -61,39 +57,17 @@ def call(Map userConfig = [:]) {
                                                             url: "https://github.com/${config.org}/${config.repo}.git",
                                                             credentialsId: 'github-token'
                                                     ]]
-                        ]
-
-                        if (env.CHANGE_ID) {
-                            // 标准 PR 事件检出方式
-                            echo "使用 PR 标准检出方式: refs/pull/${CHANGE_ID}/head"
-                            checkoutConfig.branches = [[name: 'refs/pull/${CHANGE_ID}/head']]
-                            checkoutConfig.userRemoteConfigs[0].refspec = '+refs/pull/*:refs/remotes/origin/pr/*'
-                        } else if (env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')) {
-                            // GitHub 分支源插件的检出方式
-                            echo "使用 GitHub 分支源检出方式: ${env.BRANCH_NAME}"
-                            checkoutConfig.branches = [[name: env.BRANCH_NAME]]
-                        } else {
-                            // 回退到主分支
-                            echo "⚠️ 使用回退检出方式: main"
-                            checkoutConfig.branches = [[name: 'main']]
-                        }
-
-                        checkout(checkoutConfig)
+                        ])
 
                         dir('src') {
                             sh 'git log -1 --oneline'
                             sh 'git branch -a'
                         }
 
-                        // 调试信息
-                        echo "环境变量详情:"
-                        echo "CHANGE_ID: ${env.CHANGE_ID}"
-                        echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
-                        echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+                        echo "构建详情:"
                         echo "BRANCH_NAME: ${env.BRANCH_NAME}"
-                        echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                        echo "IS_PR: ${env.IS_PR}"
                         echo "SCAN_INTENSITY: ${env.SCAN_INTENSITY}"
-                        echo "SKIP_DEPENDENCY_CHECK: ${config.skipDependencyCheck}"
                     }
                 }
             }
@@ -105,11 +79,12 @@ def call(Map userConfig = [:]) {
                             dir('src') {
                                 script {
                                     def securityTools = new org.yakiv.SecurityTools(steps, env)
+                                    // ========== 修改点6：传递 IS_PR 信息 ==========
                                     securityTools.runPRSecurityScan(
                                             projectName: config.projectName,
-                                            changeId: env.CHANGE_ID,
-                                            changeBranch: env.CHANGE_BRANCH,
-                                            changeTarget: env.CHANGE_TARGET,
+                                            isPR: env.IS_PR.toBoolean(),
+                                            prNumber: config.prNumber,
+                                            branchName: env.BRANCH_NAME,
                                             skipDependencyCheck: config.skipDependencyCheck,
                                             scanIntensity: env.SCAN_INTENSITY
                                     )
@@ -119,7 +94,6 @@ def call(Map userConfig = [:]) {
                         post {
                             always {
                                 script {
-                                    // 发布安全扫描报告
                                     publishHTML([
                                             allowMissing: true,
                                             alwaysLinkToLastBuild: true,
@@ -128,31 +102,6 @@ def call(Map userConfig = [:]) {
                                             reportFiles: 'dependency-check-report.html,trivy-report.html',
                                             reportName: '安全扫描报告'
                                     ])
-                                }
-                            }
-                            success {
-                                script {
-                                    // ========== 修改点3：只在有 PR 上下文时更新状态 ==========
-                                    if (env.CHANGE_ID) {
-                                        updateGitHubCommitStatus(
-                                                state: 'SUCCESS',
-                                                context: 'security-scan',
-                                                description: '安全扫描通过',
-                                                targetUrl: "${env.BUILD_URL}security-scan/"
-                                        )
-                                    }
-                                }
-                            }
-                            failure {
-                                script {
-                                    if (env.CHANGE_ID) {
-                                        updateGitHubCommitStatus(
-                                                state: 'FAILURE',
-                                                context: 'security-scan',
-                                                description: '安全扫描失败',
-                                                targetUrl: "${env.BUILD_URL}security-scan/"
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -170,7 +119,6 @@ def call(Map userConfig = [:]) {
                         post {
                             always {
                                 script {
-                                    // 发布测试报告
                                     junit allowEmptyResults: true, testResults: 'src/target/surefire-reports/*.xml'
                                     publishHTML([
                                             allowMissing: true,
@@ -180,30 +128,6 @@ def call(Map userConfig = [:]) {
                                             reportFiles: 'surefire-report.html,jacoco/index.html',
                                             reportName: '测试报告'
                                     ])
-                                }
-                            }
-                            success {
-                                script {
-                                    if (env.CHANGE_ID) {
-                                        updateGitHubCommitStatus(
-                                                state: 'SUCCESS',
-                                                context: 'build',
-                                                description: '构建测试通过',
-                                                targetUrl: "${env.BUILD_URL}testReport/"
-                                        )
-                                    }
-                                }
-                            }
-                            failure {
-                                script {
-                                    if (env.CHANGE_ID) {
-                                        updateGitHubCommitStatus(
-                                                state: 'FAILURE',
-                                                context: 'build',
-                                                description: '构建测试失败',
-                                                targetUrl: "${env.BUILD_URL}testReport/"
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -222,90 +146,40 @@ def call(Map userConfig = [:]) {
                         }
                     }
                 }
-                post {
-                    success {
-                        script {
-                            if (env.CHANGE_ID) {
-                                updateGitHubCommitStatus(
-                                        state: 'SUCCESS',
-                                        context: 'quality-gate',
-                                        description: '质量门检查通过',
-                                        targetUrl: "${env.BUILD_URL}"
-                                )
-                            }
-                        }
-                    }
-                    failure {
-                        script {
-                            if (env.CHANGE_ID) {
-                                updateGitHubCommitStatus(
-                                        state: 'FAILURE',
-                                        context: 'quality-gate',
-                                        description: '质量门检查失败',
-                                        targetUrl: "${env.BUILD_URL}"
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
 
         post {
             always {
-                script {
-                    // 清理工作空间
-                    cleanWs()
-                }
+                cleanWs()
             }
             success {
                 script {
-                    // ========== 修改点4：增强 PR 评论逻辑 ==========
-                    if (env.CHANGE_ID) {
-                        // PR 成功评论
+                    // ========== 修改点7：只在 PR 构建时发送评论 ==========
+                    if (env.IS_PR.toBoolean() && config.prNumber) {
                         githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
 
-📊 **构建详情**: ${env.BUILD_URL}
-
-### 检查结果:
-- ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
-- ✅ 构建测试通过  
-- ✅ 质量门检查通过
-- ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
-
-**注意**: 只有通过所有质量检查才允许合并。"""
-                    } else {
-                        echo "没有检测到 PR 上下文，跳过 PR 评论"
+                        📊 **构建详情**: ${env.BUILD_URL}
+                        
+                        ### 检查结果:
+                        - ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
+                        - ✅ 构建测试通过  
+                        - ✅ 质量门检查通过
+                        - ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
+                        
+                        **注意**: 只有通过所有质量检查才允许合并。"""
                     }
                 }
             }
             failure {
                 script {
-                    if (env.CHANGE_ID) {
-                        // PR 失败评论
+                    if (env.IS_PR.toBoolean() && config.prNumber) {
                         githubPRComment comment: """❌ PR验证失败！请检查以下问题：
 
-📊 **构建详情**: ${env.BUILD_URL}
-
-### 失败项目:
-- 🔍 查看构建日志: ${env.BUILD_URL}console
-- 🛡️ 安全扫描结果: ${env.BUILD_URL}security-scan/
-- ⚗️ 测试报告: ${env.BUILD_URL}testReport/
-- 📈 质量门结果: ${config.sonarUrl}/dashboard?id=${config.projectName}-pr-${env.CHANGE_ID}
-
-**重要**: 此PR未通过质量门禁，只允许force merge。"""
-                    }
-                }
-            }
-            unstable {
-                script {
-                    if (env.CHANGE_ID) {
-                        // PR 不稳定评论
-                        githubPRComment comment: """⚠️ PR验证不稳定！部分检查未通过。
-
-📊 **构建详情**: ${env.BUILD_URL}
-
-请检查测试报告和安全扫描结果，修复问题后重新触发构建。"""
+                            📊 **构建详情**: ${env.BUILD_URL}
+                            
+                            请查看构建日志和安全扫描报告，修复问题后重新触发构建。
+                        """
                     }
                 }
             }
