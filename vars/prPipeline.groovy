@@ -43,13 +43,11 @@ def call(Map userConfig = [:]) {
     env.SONAR_URL = "${config.sonarUrl}"
     env.TRIVY_URL = "${config.trivyUrl}"
     env.HARBOR_URL = "${config.harborUrl}"
-    // ========== 关键修改：修正项目目录路径 ==========
-    env.PROJECT_DIR = "."  // 改为当前目录，而不是 "src"
+    env.PROJECT_DIR = "."
     env.SCAN_INTENSITY = "${config.scanIntensity}"
     env.IS_PR = "${isPR}"
     env.SOURCE_BRANCH = "${sourceBranch}"
     env.TARGET_BRANCH = "${targetBranch}"
-    // ========== 修改点1：设置 SonarQube 社区版标志 ==========
     env.SONARQUBE_COMMUNITY_EDITION = "true"
 
     try {
@@ -58,7 +56,6 @@ def call(Map userConfig = [:]) {
         // 阶段 1: 安全扫描
         stage('Security Scan') {
             echo "🔍 开始安全扫描..."
-            // ========== 关键修改：移除 dir('src') 包装 ==========
             def securityTools = new org.yakiv.SecurityTools(steps, env)
             securityTools.runPRSecurityScan(
                     projectName: config.projectName,
@@ -68,7 +65,6 @@ def call(Map userConfig = [:]) {
                     targetBranch: targetBranch,
                     skipDependencyCheck: config.skipDependencyCheck,
                     scanIntensity: config.scanIntensity,
-                    // ========== 修改点2：传递社区版标志 ==========
                     sonarqubeCommunityEdition: env.SONARQUBE_COMMUNITY_EDITION.toBoolean()
             )
 
@@ -77,18 +73,16 @@ def call(Map userConfig = [:]) {
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    // ========== 关键修改：修正报告路径 ==========
                     reportDir: 'target',
                     reportFiles: 'dependency-check-report.html,trivy-report.html',
                     reportName: '安全扫描报告'
             ])
 
-            // ========== 修改点3：发布免费工具分析报告 ==========
+            // 发布代码质量报告
             publishHTML([
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    // ========== 关键修改：修正报告路径 ==========
                     reportDir: 'target/site',
                     reportFiles: 'checkstyle.html,spotbugs.html,jacoco/index.html,pmd.html',
                     reportName: '代码质量报告'
@@ -98,25 +92,22 @@ def call(Map userConfig = [:]) {
         // 阶段 2: 构建和测试
         stage('Build & Test') {
             echo "🔨 开始构建和测试..."
-            // ========== 关键修改：移除 dir('src') 包装 ==========
             def buildTools = new org.yakiv.BuildTools(steps, env)
             buildTools.runPRBuildAndTest()
 
             // 发布测试报告
-            // ========== 关键修改：修正测试结果路径 ==========
             junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
             publishHTML([
                     allowMissing: true,
                     alwaysLinkToLastBuild: true,
                     keepAll: true,
-                    // ========== 关键修改：修正报告路径 ==========
                     reportDir: 'target/site',
                     reportFiles: 'surefire-report.html,jacoco/index.html',
                     reportName: '测试报告'
             ])
         }
 
-        // ========== 修改点4：调整质量检查阶段 ==========
+        // 质量检查阶段
         stage('Quality Check') {
             echo "📊 运行质量检查..."
             if (!env.SONARQUBE_COMMUNITY_EDITION.toBoolean()) {
@@ -136,11 +127,8 @@ def call(Map userConfig = [:]) {
                 echo "- JaCoCo: 代码覆盖率"
                 echo "- PMD: 代码质量分析"
 
-                // 这里可以添加免费工具的质量检查逻辑
-                // ========== 关键修改：移除 dir('src') 包装 ==========
                 sh '''
                     echo "验证免费工具分析结果..."
-                    # 检查关键质量指标
                     echo "免费工具质量检查完成"
                 '''
             }
@@ -150,9 +138,8 @@ def call(Map userConfig = [:]) {
         echo "✅ PR Pipeline 执行成功"
 
         if (isPR && prNumber) {
-            // ========== 修改点5：更新 PR 评论内容 ==========
             def qualityTools = "Checkstyle, SpotBugs, JaCoCo, PMD"
-            githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
+            def commentBody = """✅ PR验证通过！所有检查均成功完成。
 
 📊 **构建详情**: ${env.BUILD_URL}
 
@@ -169,6 +156,8 @@ def call(Map userConfig = [:]) {
 - 🛠️ 代码质量: ${env.BUILD_URL}code-quality/
 
 **注意**: 使用免费工具进行代码质量分析，如需更高级功能请升级 SonarQube 版本。"""
+
+            postGitHubComment(prNumber, commentBody, config)
         }
 
     } catch (Exception e) {
@@ -176,11 +165,13 @@ def call(Map userConfig = [:]) {
         echo "❌ PR Pipeline 执行失败: ${e.message}"
 
         if (isPR && prNumber) {
-            githubPRComment comment: """❌ PR验证失败！请检查以下问题：
+            def failureComment = """❌ PR验证失败！请检查以下问题：
 
 📊 **构建详情**: ${env.BUILD_URL}
 
 请查看构建日志和安全扫描报告，修复问题后重新触发构建。"""
+
+            postGitHubComment(prNumber, failureComment, config)
         }
 
         throw e // 重新抛出异常，让外层知道构建失败
@@ -188,5 +179,33 @@ def call(Map userConfig = [:]) {
         // ========== 清理工作 ==========
         cleanWs()
         echo "PR Pipeline 执行完成 - 结果: ${currentBuild.result}"
+    }
+}
+
+// ========== 新增方法：使用 GitHub API 发布评论 ==========
+def postGitHubComment(prNumber, commentBody, config) {
+    try {
+        withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+            // 将评论内容写入临时文件
+            writeFile file: 'comment.json', text: """{
+                "body": "${commentBody.replace('"', '\\"').replace('\n', '\\n')}"
+            }"""
+
+            sh """
+                echo "发布 GitHub PR 评论..."
+                curl -X POST \
+                -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                https://api.github.com/repos/${config.org}/${config.repo}/issues/${prNumber}/comments \
+                -d @comment.json || echo "GitHub 评论发布失败，但继续构建流程"
+            """
+
+            // 清理临时文件
+            sh 'rm -f comment.json'
+        }
+        echo "✅ GitHub PR 评论发布成功"
+    } catch (Exception e) {
+        echo "⚠️ GitHub PR 评论发布失败: ${e.message}"
+        echo "评论内容: ${commentBody}"
     }
 }
