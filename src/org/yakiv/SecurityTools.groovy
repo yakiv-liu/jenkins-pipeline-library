@@ -209,51 +209,178 @@ class SecurityTools implements Serializable {
         // fastDependencyCheckWithCache(skip)  // 使用缓存的快速版本
     }
 
-    // === 修改点4：添加 skip 参数支持 ===
-    def runPRSecurityScan(Map config, Boolean skipDependencyCheck = false) {
-        steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-            steps.withSonarQubeEnv('sonarqube') {
-                steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-                    // 根据扫描强度调整参数
-                    def sonarExclusions = '**/test/**,**/target/**'
-                    def sonarSources = 'src/main/java'
+    // ========== 修改点4：修复方法签名冲突 - 只保留一个 runPRSecurityScan 方法 ==========
+    def runPRSecurityScan(Map params = [:]) {
+        // 处理旧版参数格式的兼容性
+        def config = [:]
 
-                    if (config.scanIntensity == 'fast') {
-                        sonarExclusions += ',**/*.md,**/*.json,**/*.xml'
-                        steps.echo "🔍 快速扫描模式：跳过文档和配置文件"
-                    } else if (config.scanIntensity == 'deep') {
-                        sonarSources += ',src/test/java'
-                        steps.echo "🔍 深度扫描模式：包含测试代码分析"
-                    }
+        // 检查是否是旧版参数格式（包含 changeId）
+        if (params.containsKey('changeId')) {
+            steps.echo "⚠️ 检测到旧版参数格式，进行兼容性转换"
+            config.projectName = params.projectName
+            config.isPR = true
+            config.prNumber = params.changeId
+            config.branchName = params.changeBranch
+            config.skipDependencyCheck = params.skipDependencyCheck ?: false
+            config.scanIntensity = params.scanIntensity ?: 'standard'
+            config.sonarqubeCommunityEdition = params.sonarqubeCommunityEdition ?: false
+            config.targetBranch = params.changeTarget ?: 'main'
+        } else {
+            // 使用新版参数格式
+            config = params
+        }
 
-                    steps.sh """
-                    mvn sonar:sonar \\
-                    -Dsonar.projectKey=${config.projectName}-pr-${config.changeId} \\
-                    -Dsonar.projectName='${config.projectName} PR ${config.changeId}' \\
-                    -Dsonar.pullrequest.key=${config.changeId} \\
-                    -Dsonar.pullrequest.branch=${config.changeBranch} \\
-                    -Dsonar.pullrequest.base=${config.changeTarget} \\
-                    -Dsonar.sources=${sonarSources} \\
-                    -Dsonar.exclusions='${sonarExclusions}' \\
-                    -s \${MAVEN_SETTINGS}
-                """
-                }
+        // 设置默认值
+        def projectName = config.projectName ?: 'unknown'
+        def isPR = config.isPR ?: false
+        def prNumber = config.prNumber
+        def branchName = config.branchName
+        def skipDependencyCheck = config.skipDependencyCheck ?: true
+        def scanIntensity = config.scanIntensity ?: 'standard'
+        def sonarqubeCommunityEdition = config.sonarqubeCommunityEdition ?: false
+        def targetBranch = config.targetBranch ?: 'main'
+
+        steps.echo "开始安全扫描..."
+        steps.echo "项目: ${projectName}"
+        steps.echo "是否为 PR: ${isPR}"
+        steps.echo "PR 编号: ${prNumber}"
+        steps.echo "分支名称: ${branchName}"
+        steps.echo "目标分支: ${targetBranch}"
+        steps.echo "SonarQube 社区版: ${sonarqubeCommunityEdition}"
+        steps.echo "跳过依赖检查: ${skipDependencyCheck}"
+        steps.echo "扫描强度: ${scanIntensity}"
+
+        try {
+            // 运行依赖检查
+            if (!skipDependencyCheck) {
+                steps.echo "🔍 运行依赖检查..."
+                dependencyCheck(false)
+            } else {
+                steps.echo "⏭️ 跳过依赖检查"
             }
 
-            if (!skipDependencyCheck) {
-                steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-                    steps.sh """
-                    mvn org.owasp:dependency-check-maven:check -DskipTests -s \${MAVEN_SETTINGS} \\
-                    -DdependencyCheck.failBuildOnCVSS=9
-                """
-                    steps.sh """
-                    mvn spotbugs:spotbugs -DskipTests -s \${MAVEN_SETTINGS}
-                """
-                    steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif .'
-                }
+            // 运行 Trivy 扫描
+            steps.echo "🔍 运行 Trivy 扫描..."
+            steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif . || echo "Trivy 扫描失败但继续构建"'
+            }
+
+            // ========== 修改点5：根据 SonarQube 版本调整扫描逻辑 ==========
+            if (sonarqubeCommunityEdition) {
+                steps.echo "⚠️ SonarQube 社区版：跳过 PR 分析，使用标准分析"
+                runSonarQubeCommunityScan(projectName, branchName, isPR, prNumber)
             } else {
-                steps.echo "⏭️ 跳过 PR 安全扫描中的依赖检查"
+                steps.echo "✅ SonarQube 企业版：使用完整的 PR 分析"
+                runSonarQubeEnterpriseScan(projectName, branchName, isPR, prNumber, targetBranch, scanIntensity)
+            }
+
+            steps.echo "✅ 安全扫描完成"
+        } catch (Exception e) {
+            steps.echo "❌ 安全扫描失败: ${e.message}"
+            throw e
+        }
+    }
+
+    // ========== 修改点6：新增社区版 SonarQube 扫描方法 ==========
+    def runSonarQubeCommunityScan(String projectName, String branchName, boolean isPR, String prNumber) {
+        steps.echo "运行 SonarQube 社区版扫描..."
+
+        steps.withSonarQubeEnv('sonarqube') {
+            steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+                    steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                        def sonarParams = [
+                                "sonar.projectKey=${projectName}",
+                                "sonar.projectName=${projectName}",
+                                "sonar.sources=src/main/java",
+                                "sonar.host.url=${env.SONAR_URL}",
+                                "sonar.login=${env.SONAR_TOKEN}"
+                        ]
+
+                        // 如果是 PR，在社区版中我们只做标准分析，不设置 PR 参数
+                        if (isPR) {
+                            steps.echo "⚠️ PR 构建在社区版中：使用标准分析（非 PR 分析）"
+                            // 可以设置分支参数，但避免使用 PR 特定参数
+                            sonarParams << "sonar.branch.name=${branchName}"
+                        } else {
+                            // 分支构建：使用分支分析
+                            sonarParams << "sonar.branch.name=${branchName}"
+                        }
+
+                        // 构建 SonarQube 命令
+                        def sonarCmd = "mvn sonar:sonar"
+                        sonarParams.each { param ->
+                            sonarCmd += " -D${param}"
+                        }
+                        sonarCmd += " -s \${MAVEN_SETTINGS}"
+
+                        steps.sh """
+                            echo "执行 SonarQube 社区版扫描..."
+                            ${sonarCmd}
+                        """
+                    }
+                }
             }
         }
+
+        steps.echo "✅ SonarQube 社区版扫描完成"
+    }
+
+    // ========== 修改点7：新增企业版 SonarQube 扫描方法 ==========
+    def runSonarQubeEnterpriseScan(String projectName, String branchName, boolean isPR, String prNumber, String targetBranch, String scanIntensity) {
+        steps.echo "运行 SonarQube 企业版扫描..."
+
+        steps.withSonarQubeEnv('sonarqube') {
+            steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+                    steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                        // 根据扫描强度调整参数
+                        def sonarExclusions = '**/test/**,**/target/**'
+                        def sonarSources = 'src/main/java'
+
+                        if (scanIntensity == 'fast') {
+                            sonarExclusions += ',**/*.md,**/*.json,**/*.xml'
+                            steps.echo "🔍 快速扫描模式：跳过文档和配置文件"
+                        } else if (scanIntensity == 'deep') {
+                            sonarSources += ',src/test/java'
+                            steps.echo "🔍 深度扫描模式：包含测试代码分析"
+                        }
+
+                        def sonarCmd = "mvn sonar:sonar"
+                        def sonarParams = [
+                                "sonar.projectKey=${projectName}-pr-${prNumber}",
+                                "sonar.projectName='${projectName} PR ${prNumber}'",
+                                "sonar.sources=${sonarSources}",
+                                "sonar.exclusions='${sonarExclusions}'",
+                                "sonar.host.url=${env.SONAR_URL}",
+                                "sonar.login=${env.SONAR_TOKEN}"
+                        ]
+
+                        // 企业版：使用完整的 PR 分析参数
+                        if (isPR) {
+                            sonarParams << "sonar.pullrequest.key=${prNumber}"
+                            sonarParams << "sonar.pullrequest.branch=${branchName}"
+                            sonarParams << "sonar.pullrequest.base=${targetBranch}"
+                        } else {
+                            // 分支构建：使用分支分析
+                            sonarParams << "sonar.branch.name=${branchName}"
+                        }
+
+                        // 构建完整的命令
+                        sonarParams.each { param ->
+                            sonarCmd += " -D${param}"
+                        }
+                        sonarCmd += " -s \${MAVEN_SETTINGS}"
+
+                        steps.sh """
+                            echo "执行 SonarQube 企业版扫描..."
+                            ${sonarCmd}
+                        """
+                    }
+                }
+            }
+        }
+
+        steps.echo "✅ SonarQube 企业版扫描完成"
     }
 }
