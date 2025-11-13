@@ -3,7 +3,7 @@ def call(Map userConfig = [:]) {
     def configLoader = new org.yakiv.Config(steps)
     def config = configLoader.mergeConfig(userConfig)
 
-    // ========== 修改点1：移除严格的PR检查，因为路由已在Jenkinsfile中处理 ==========
+    // ========== 修改点1：简化启动日志，移除PR检查 ==========
     echo "✅ 开始执行 main pipeline - 分支: ${env.BRANCH_NAME}"
 
     pipeline {
@@ -23,7 +23,7 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${configLoader.getHarborUrl()}"
             SONAR_URL = "${configLoader.getSonarUrl()}"
             TRIVY_URL = "${configLoader.getTrivyUrl()}"
-            // === 修改点：使用 Jenkins 工作空间内的备份目录 ===
+            // 使用 Jenkins 工作空间内的备份目录
             BACKUP_DIR = "${env.WORKSPACE}/backups"
 
             // 动态环境变量
@@ -34,7 +34,7 @@ def call(Map userConfig = [:]) {
             // ========== 修改点2：项目目录改为当前目录 ==========
             PROJECT_DIR = "."
 
-            // === 新增环境变量：跳过依赖检查标志 ===
+            // 跳过依赖检查标志
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
         }
 
@@ -42,20 +42,15 @@ def call(Map userConfig = [:]) {
             stage('Initialize & Validation') {
                 steps {
                     script {
-                        // 设置不能在 environment 块中直接设置的环境变量
+                        // ========== 修改点3：移除重复的项目分支配置，使用环境变量 ==========
                         env.PROJECT_NAME = config.projectName
-                        env.PROJECT_REPO_URL = config.projectRepoUrl
-
-                        // 设置项目分支，如果没有提供则使用默认值 'main'
-                        env.PROJECT_BRANCH = config.projectBranch ?: 'main'
-
                         env.DEPLOY_ENV = config.deployEnv
                         env.IS_RELEASE = config.isRelease.toString()
                         env.ROLLBACK = config.rollback.toString()
                         env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
                         env.EMAIL_RECIPIENTS = config.defaultEmail
 
-                        // === 显示依赖检查配置 ===
+                        // 显示依赖检查配置
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
 
                         // 参数验证
@@ -75,8 +70,7 @@ def call(Map userConfig = [:]) {
                         echo "项目: ${env.PROJECT_NAME}"
                         echo "环境: ${env.DEPLOY_ENV}"
                         echo "版本: ${env.APP_VERSION}"
-                        echo "项目仓库: ${env.PROJECT_REPO_URL}"
-                        echo "项目分支: ${env.PROJECT_BRANCH}"
+                        echo "当前分支: ${env.BRANCH_NAME}"
                         echo "端口: ${configLoader.getAppPort(config)}"
                         echo "目标主机: ${configLoader.getEnvironmentHost(config, env.DEPLOY_ENV)}"
                     }
@@ -86,11 +80,8 @@ def call(Map userConfig = [:]) {
             stage('Checkout & Setup') {
                 steps {
                     script {
-                        // ========== 修改点3：不再需要检出代码，因为Jenkinsfile在项目仓库中 ==========
-                        echo "✅ 代码已自动检出（Jenkinsfile在项目仓库中）"
-
-                        // 设置项目目录环境变量（已在environment块中设置）
-                        // env.PROJECT_DIR = "."
+                        // ========== 修改点4：简化检出说明 ==========
+                        echo "✅ 代码已自动检出（多分支项目）"
 
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                         writeJSON file: 'deployment-manifest.json', json: [
@@ -118,7 +109,6 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点4：移除原有的额外检出步骤，其他阶段保持不变 ==========
             stage('Build & Security Scan') {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
@@ -158,10 +148,11 @@ def call(Map userConfig = [:]) {
                                 steps {
                                     script {
                                         def securityTools = new org.yakiv.SecurityTools(steps, env)
+                                        // ========== 修改点5：使用当前分支而不是配置的分支 ==========
                                         securityTools.fastSonarScan(
-                                                projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
-                                                projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
-                                                branch: "${env.PROJECT_BRANCH}"
+                                                projectKey: "${env.PROJECT_NAME}-${env.BRANCH_NAME}-${env.APP_VERSION}",
+                                                projectName: "${env.PROJECT_NAME} ${env.BRANCH_NAME} ${env.APP_VERSION}",
+                                                branch: "${env.BRANCH_NAME}"
                                         )
                                     }
                                 }
@@ -193,7 +184,7 @@ def call(Map userConfig = [:]) {
                                 steps.echo "⏳ 等待 SonarQube 质量门结果..."
 
                                 // 添加分析状态检查
-                                def projectKey = "${env.PROJECT_NAME}-${env.APP_VERSION}"
+                                def projectKey = "${env.PROJECT_NAME}-${env.BRANCH_NAME}-${env.APP_VERSION}"
                                 steps.echo "检查分析项目: ${projectKey}"
 
                                 // 获取质量门状态
@@ -231,12 +222,11 @@ def call(Map userConfig = [:]) {
                         def deployTools = new org.yakiv.DeployTools(steps, env)
 
                         if (env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') {
-                            input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}",
+                            input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}\n分支: ${env.BRANCH_NAME}",
                                     ok: '确认部署',
                                     submitterParameter: 'APPROVER'
                         }
 
-                        // === 修改点：移除 Harbor 凭据包装，直接部署 ===
                         deployTools.deployToEnvironment(
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
@@ -246,20 +236,16 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
                         script {
                             try {
                                 def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 确保备份目录存在
-                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
 
-                                // === 修复点：使用 shell 命令追加日志文件 ===
+                                // 使用 shell 命令追加日志文件
                                 steps.sh """
-                                    echo "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
+                                    echo "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BRANCH_NAME},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
                                 """
 
                                 echo "部署记录已保存到: ${env.BACKUP_DIR}"
@@ -280,9 +266,8 @@ def call(Map userConfig = [:]) {
                     script {
                         def deployTools = new org.yakiv.DeployTools(steps, env)
 
-                        echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
+                        echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}, 分支: ${env.BRANCH_NAME}"
 
-                        // === 修改点：移除 Harbor 凭据包装，直接回滚 ===
                         deployTools.executeRollback(
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
@@ -292,20 +277,16 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
                         script {
                             try {
                                 def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
 
-                                // 确保备份目录存在
-                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
                                 // 写入版本文件
                                 steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
 
-                                // === 修复点：使用 shell 命令追加日志文件 ===
+                                // 使用 shell 命令追加日志文件
                                 steps.sh """
-                                    echo "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log"
+                                    echo "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BRANCH_NAME},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log"
                                 """
 
                                 echo "回滚记录已保存到: ${env.BACKUP_DIR}"
@@ -340,7 +321,7 @@ def call(Map userConfig = [:]) {
         post {
             always {
                 script {
-                    // === 关键修改点：传递 configLoader 到 NotificationTools ===
+                    // 传递 configLoader 到 NotificationTools
                     def notificationTools = new org.yakiv.NotificationTools(steps, env, configLoader)
 
                     // 确定流水线类型
@@ -360,10 +341,11 @@ def call(Map userConfig = [:]) {
                             buildUrl: env.BUILD_URL,
                             isRollback: env.ROLLBACK.toBoolean(),
                             pipelineType: pipelineType,
-                            attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null)
+                            attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null),
+                            branch: env.BRANCH_NAME  // ========== 修改点6：添加分支信息到通知 ==========
                     )
 
-                    // === 修改点：添加备份文件到归档 ===
+                    // 添加备份文件到归档
                     archiveArtifacts artifacts: 'deployment-manifest.json,trivy-report.html,backups/*', fingerprint: true
                     publishHTML([
                             allowMissing: false,
