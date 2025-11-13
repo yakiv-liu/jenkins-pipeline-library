@@ -1,15 +1,13 @@
 def call(Map userConfig = [:]) {
-    // ========== 修改点1：修复配置合并方法调用 ==========
+    // ========== 配置合并逻辑 ==========
     def config = [:]
 
     try {
-        // 正确调用共享库的配置合并方法
         def configInstance = new org.yakiv.Config(steps)
         config = configInstance.mergeConfig(userConfig)
         echo "✅ 使用共享库配置合并"
     } catch (Exception e) {
         echo "⚠️ 共享库配置合并失败，使用备用配置: ${e.message}"
-        // 备用方案：手动设置基本配置
         config = [
                 projectName: userConfig.projectName ?: 'demo-helloworld',
                 org: userConfig.org ?: 'yakiv-liu',
@@ -24,24 +22,14 @@ def call(Map userConfig = [:]) {
                 trivyUrl: userConfig.trivyUrl ?: 'https://trivy.example.com',
                 harborUrl: userConfig.harborUrl ?: 'https://harbor.example.com'
         ]
-        config.putAll(userConfig) // 确保用户配置覆盖默认值
+        config.putAll(userConfig)
     }
 
-    echo "=== Pipeline 详细检测 ==="
-    echo "BRANCH_NAME: ${env.BRANCH_NAME}"
-    echo "GIT_BRANCH: ${env.GIT_BRANCH}"
-
-    // 在共享库中也使用 BRANCH_NAME 判断
+    // ========== 判断构建类型 ==========
     def isPR = env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')
+    def prNumber = isPR ? env.BRANCH_NAME.replace('PR-', '') : null
 
-    if (isPR) {
-        def prNumber = env.BRANCH_NAME.replace('PR-', '')
-        echo "✅ 确认：PR #${prNumber} 流水线"
-        config.prNumber = prNumber
-    } else {
-        echo "✅ 确认：分支流水线 - ${env.BRANCH_NAME}"
-    }
-
+    // ========== 完整的 pipeline 定义 ==========
     pipeline {
         agent {
             label config.agentLabel
@@ -52,6 +40,7 @@ def call(Map userConfig = [:]) {
             buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '8'))
             disableConcurrentBuilds()
             githubProjectProperty(projectUrlStr: "https://github.com/${config.org}/${config.repo}/")
+            retry(3) // 构建失败时重试3次
         }
 
         environment {
@@ -60,34 +49,88 @@ def call(Map userConfig = [:]) {
             TRIVY_URL = "${config.trivyUrl}"
             HARBOR_URL = "${config.harborUrl}"
             PROJECT_DIR = "src"
-            SCAN_INTENSITY = "${config.scanIntensity ?: 'standard'}"
-            // 设置 IS_PR 环境变量供后续步骤使用
+            SCAN_INTENSITY = "${config.scanIntensity}"
             IS_PR = "${isPR}"
+            GIT_TIMEOUT = "10"
         }
 
         stages {
+            stage('Check Build Type') {
+                steps {
+                    script {
+                        echo "=== 构建类型检测 ==="
+                        echo "BRANCH_NAME: ${env.BRANCH_NAME}"
+                        echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+
+                        if (isPR) {
+                            echo "✅ 确认：这是 PR #${prNumber} 构建"
+                            echo "构建类型：Pull Request 验证"
+                        } else {
+                            echo "✅ 确认：这是分支构建"
+                            echo "构建分支：${env.BRANCH_NAME}"
+                            echo "构建类型：分支流水线"
+                        }
+
+                        def causes = currentBuild.getBuildCauses()
+                        echo "构建原因:"
+                        causes.each { cause ->
+                            echo " - ${cause.shortDescription ?: cause.toString()}"
+                        }
+                    }
+                }
+            }
+
             stage('Checkout Code') {
                 steps {
                     script {
                         echo "开始检出代码..."
 
-                        // 简化检出逻辑，Multibranch 会自动处理
-                        checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: env.BRANCH_NAME]],
-                                extensions: [
-                                        [$class: 'CleanCheckout'],
-                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
-                                ],
-                                userRemoteConfigs: [[
-                                                            url: "https://github.com/${config.org}/${config.repo}.git",
-                                                            credentialsId: 'github-token'
-                                                    ]]
-                        ])
+                        def checkoutSuccess = false
+                        def retryCount = 0
+                        def maxRetries = 5
+
+                        while (!checkoutSuccess && retryCount < maxRetries) {
+                            retryCount++
+                            echo "尝试检出代码 (第 ${retryCount} 次)"
+
+                            try {
+                                timeout(time: 5, unit: 'MINUTES') {
+                                    checkout([
+                                            $class: 'GitSCM',
+                                            branches: [[name: env.BRANCH_NAME]],
+                                            extensions: [
+                                                    [$class: 'CleanCheckout'],
+                                                    [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src'],
+                                                    [$class: 'CloneOption',
+                                                     timeout: 5,
+                                                     depth: 1,
+                                                     noTags: true,
+                                                     shallow: true],
+                                                    [$class: 'LocalBranch', localBranch: '**']
+                                            ],
+                                            userRemoteConfigs: [[
+                                                                        url: "https://github.com/${config.org}/${config.repo}.git",
+                                                                        credentialsId: 'github-token',
+                                                                        timeout: 10
+                                                                ]]
+                                    ])
+                                }
+                                checkoutSuccess = true
+                                echo "✅ 代码检出成功"
+                            } catch (Exception e) {
+                                echo "⚠️ 代码检出失败 (第 ${retryCount} 次): ${e.message}"
+                                if (retryCount < maxRetries) {
+                                    sleep time: 10, unit: 'SECONDS'
+                                } else {
+                                    error "代码检出失败，已重试 ${maxRetries} 次"
+                                }
+                            }
+                        }
 
                         dir('src') {
                             sh 'git log -1 --oneline'
                             sh 'git branch -a'
+                            sh 'ls -la || echo "目录为空"'
                         }
 
                         echo "构建详情:"
@@ -99,19 +142,20 @@ def call(Map userConfig = [:]) {
             }
 
             stage('Parallel Security & Build') {
+                when {
+                    expression { fileExists('src') }
+                }
                 parallel {
                     stage('Security Scan') {
                         steps {
                             dir('src') {
                                 script {
-                                    // ========== 修改点2：安全地调用 SecurityTools ==========
                                     try {
                                         def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                        // 传递 IS_PR 信息
                                         securityTools.runPRSecurityScan(
                                                 projectName: config.projectName,
-                                                isPR: env.IS_PR.toBoolean(),
-                                                prNumber: config.prNumber,
+                                                isPR: isPR,
+                                                prNumber: prNumber,
                                                 branchName: env.BRANCH_NAME,
                                                 skipDependencyCheck: config.skipDependencyCheck,
                                                 scanIntensity: env.SCAN_INTENSITY
@@ -143,7 +187,6 @@ def call(Map userConfig = [:]) {
                         steps {
                             dir('src') {
                                 script {
-                                    // ========== 修改点3：安全地调用 BuildTools ==========
                                     try {
                                         def buildTools = new org.yakiv.BuildTools(steps, env)
                                         buildTools.runPRBuildAndTest()
@@ -195,11 +238,12 @@ def call(Map userConfig = [:]) {
         post {
             always {
                 cleanWs()
+                echo "Pipeline 执行完成 - 结果: ${currentBuild.result}"
             }
             success {
+                echo "✅ Pipeline 执行成功"
                 script {
-                    // 只在 PR 构建时发送评论
-                    if (env.IS_PR.toBoolean() && config.prNumber) {
+                    if (isPR && prNumber) {
                         try {
                             githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
 
@@ -219,14 +263,31 @@ def call(Map userConfig = [:]) {
                 }
             }
             failure {
+                echo "❌ Pipeline 执行失败"
                 script {
-                    if (env.IS_PR.toBoolean() && config.prNumber) {
+                    if (isPR && prNumber) {
                         try {
                             githubPRComment comment: """❌ PR验证失败！请检查以下问题：
 
 📊 **构建详情**: ${env.BUILD_URL}
 
 请查看构建日志和安全扫描报告，修复问题后重新触发构建。"""
+                        } catch (Exception e) {
+                            echo "⚠️ PR评论发送失败: ${e.message}"
+                        }
+                    }
+                }
+            }
+            unstable {
+                echo "⚠️ Pipeline 执行不稳定"
+                script {
+                    if (isPR && prNumber) {
+                        try {
+                            githubPRComment comment: """⚠️ PR验证不稳定！部分检查未通过。
+
+📊 **构建详情**: ${env.BUILD_URL}
+
+请检查测试报告和安全扫描结果，修复问题后重新触发构建。"""
                         } catch (Exception e) {
                             echo "⚠️ PR评论发送失败: ${e.message}"
                         }
