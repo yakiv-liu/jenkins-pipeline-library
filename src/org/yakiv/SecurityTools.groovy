@@ -96,7 +96,6 @@ class SecurityTools implements Serializable {
         }
     }
 
-    // === 修改点1：添加 skip 参数支持 ===
     def fastDependencyCheck(Boolean skip = false) {
         if (skip) {
             steps.echo "⏭️ 跳过依赖检查（配置为跳过此步骤）"
@@ -141,7 +140,6 @@ class SecurityTools implements Serializable {
         }
     }
 
-    // === 修改点2：添加 skip 参数支持 ===
     def fastDependencyCheckWithCache(Boolean skip = false) {
         if (skip) {
             steps.echo "⏭️ 跳过依赖检查（配置为跳过此步骤）"
@@ -202,14 +200,13 @@ class SecurityTools implements Serializable {
         fastSonarScan(config)
     }
 
-    // === 修改点3：添加 skip 参数支持 ===
     def dependencyCheck(Boolean skip = false) {
         // 可以选择使用哪个版本
         fastDependencyCheck(skip)  // 无超时版本
         // fastDependencyCheckWithCache(skip)  // 使用缓存的快速版本
     }
 
-    // ========== 修改点4：修复方法签名冲突 - 只保留一个 runPRSecurityScan 方法 ==========
+    // ========== 修改点1：修复方法签名冲突 - 只保留一个 runPRSecurityScan 方法 ==========
     def runPRSecurityScan(Map params = [:]) {
         // 处理旧版参数格式的兼容性
         def config = [:]
@@ -244,7 +241,7 @@ class SecurityTools implements Serializable {
         steps.echo "项目: ${projectName}"
         steps.echo "是否为 PR: ${isPR}"
         steps.echo "PR 编号: ${prNumber}"
-        steps.echo "分支名称: ${branchName}"
+        steps.echo "源分支名称: ${branchName}"
         steps.echo "目标分支: ${targetBranch}"
         steps.echo "SonarQube 社区版: ${sonarqubeCommunityEdition}"
         steps.echo "跳过依赖检查: ${skipDependencyCheck}"
@@ -265,7 +262,7 @@ class SecurityTools implements Serializable {
                 steps.sh 'trivy filesystem --format sarif --output trivy-report.sarif . || echo "Trivy 扫描失败但继续构建"'
             }
 
-            // ========== 修改点5：根据 SonarQube 版本调整扫描逻辑 ==========
+            // ========== 修改点2：根据 SonarQube 版本调整扫描逻辑 ==========
             if (sonarqubeCommunityEdition) {
                 steps.echo "⚠️ SonarQube 社区版：跳过 PR 分析，使用标准分析"
                 runSonarQubeCommunityScan(projectName, branchName, isPR, prNumber)
@@ -281,7 +278,7 @@ class SecurityTools implements Serializable {
         }
     }
 
-    // ========== 修改点6：新增社区版 SonarQube 扫描方法 ==========
+    // ========== 修改点3：新增社区版 SonarQube 扫描方法 ==========
     def runSonarQubeCommunityScan(String projectName, String branchName, boolean isPR, String prNumber) {
         steps.echo "运行 SonarQube 社区版扫描..."
 
@@ -326,7 +323,7 @@ class SecurityTools implements Serializable {
         steps.echo "✅ SonarQube 社区版扫描完成"
     }
 
-    // ========== 修改点7：新增企业版 SonarQube 扫描方法 ==========
+    // ========== 修改点4：新增企业版 SonarQube 扫描方法 ==========
     def runSonarQubeEnterpriseScan(String projectName, String branchName, boolean isPR, String prNumber, String targetBranch, String scanIntensity) {
         steps.echo "运行 SonarQube 企业版扫描..."
 
@@ -361,6 +358,7 @@ class SecurityTools implements Serializable {
                             sonarParams << "sonar.pullrequest.key=${prNumber}"
                             sonarParams << "sonar.pullrequest.branch=${branchName}"
                             sonarParams << "sonar.pullrequest.base=${targetBranch}"
+                            steps.echo "🔍 PR 分析：${branchName} -> ${targetBranch}"
                         } else {
                             // 分支构建：使用分支分析
                             sonarParams << "sonar.branch.name=${branchName}"

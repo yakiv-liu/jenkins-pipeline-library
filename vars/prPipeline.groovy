@@ -29,6 +29,15 @@ def call(Map userConfig = [:]) {
     def isPR = env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')
     def prNumber = isPR ? env.BRANCH_NAME.replace('PR-', '') : null
 
+    // ========== 修改点1：动态获取 PR 分支信息 ==========
+    def sourceBranch = isPR ? env.CHANGE_BRANCH : env.BRANCH_NAME
+    def targetBranch = isPR ? env.CHANGE_TARGET : config.defaultBranch
+
+    echo "=== PR 分支信息 ==="
+    echo "源分支 (source): ${sourceBranch}"
+    echo "目标分支 (target): ${targetBranch}"
+    echo "PR 编号: ${prNumber}"
+
     // ========== 完整的 pipeline 定义 ==========
     pipeline {
         agent {
@@ -51,10 +60,14 @@ def call(Map userConfig = [:]) {
             PROJECT_DIR = "src"
             SCAN_INTENSITY = "${config.scanIntensity}"
             IS_PR = "${isPR}"
+            // ========== 修改点2：使用 SSH 方式检出代码 ==========
             GIT_SSH_URL = "git@github.com:${config.org}/${config.repo}.git"
-            GIT_SSH_CREDENTIALS_ID = "github-ssh-key-slave"
-            // ========== 修改点1：添加 SonarQube 社区版标志 ==========
+            GIT_SSH_CREDENTIALS_ID = "github-ssh-key"
+            // ========== 修改点3：SonarQube 社区版标志 ==========
             SONARQUBE_COMMUNITY_EDITION = "true"
+            // ========== 修改点4：添加动态分支环境变量 ==========
+            SOURCE_BRANCH = "${sourceBranch}"
+            TARGET_BRANCH = "${targetBranch}"
         }
 
         stages {
@@ -64,9 +77,13 @@ def call(Map userConfig = [:]) {
                         echo "=== 构建类型检测 ==="
                         echo "BRANCH_NAME: ${env.BRANCH_NAME}"
                         echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                        echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
+                        echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
 
                         if (isPR) {
                             echo "✅ 确认：这是 PR #${prNumber} 构建"
+                            echo "PR 源分支: ${env.SOURCE_BRANCH}"
+                            echo "PR 目标分支: ${env.TARGET_BRANCH}"
                             echo "构建类型：Pull Request 验证"
                             echo "⚠️ SonarQube 社区版：将使用主分支分析而非 PR 分析"
                         } else {
@@ -100,6 +117,7 @@ def call(Map userConfig = [:]) {
 
                             try {
                                 timeout(time: 5, unit: 'MINUTES') {
+                                    // ========== 修改点5：使用 SSH 方式检出 ==========
                                     checkout([
                                             $class: 'GitSCM',
                                             branches: [[name: env.BRANCH_NAME]],
@@ -124,6 +142,7 @@ def call(Map userConfig = [:]) {
                             } catch (Exception e) {
                                 echo "⚠️ SSH 代码检出失败 (第 ${retryCount} 次): ${e.message}"
 
+                                // ========== 修改点6：如果 SSH 失败，回退到 HTTPS ==========
                                 if (retryCount == maxRetries) {
                                     echo "⚠️ SSH 方式失败，尝试使用 HTTPS 方式..."
                                     try {
@@ -169,6 +188,8 @@ def call(Map userConfig = [:]) {
                         echo "IS_PR: ${env.IS_PR}"
                         echo "SCAN_INTENSITY: ${env.SCAN_INTENSITY}"
                         echo "SONARQUBE_COMMUNITY_EDITION: ${env.SONARQUBE_COMMUNITY_EDITION}"
+                        echo "SOURCE_BRANCH: ${env.SOURCE_BRANCH}"
+                        echo "TARGET_BRANCH: ${env.TARGET_BRANCH}"
                     }
                 }
             }
@@ -184,12 +205,13 @@ def call(Map userConfig = [:]) {
                                 script {
                                     try {
                                         def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                        // ========== 修改点2：传递 SonarQube 版本信息 ==========
+                                        // ========== 修改点7：使用动态分支信息 ==========
                                         securityTools.runPRSecurityScan(
                                                 projectName: config.projectName,
                                                 isPR: isPR,
                                                 prNumber: prNumber,
-                                                branchName: env.BRANCH_NAME,
+                                                branchName: env.SOURCE_BRANCH,
+                                                targetBranch: env.TARGET_BRANCH,
                                                 skipDependencyCheck: config.skipDependencyCheck,
                                                 scanIntensity: env.SCAN_INTENSITY,
                                                 sonarqubeCommunityEdition: env.SONARQUBE_COMMUNITY_EDITION.toBoolean()
@@ -250,11 +272,11 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点3：条件性的质量门检查 ==========
+            // ========== 修改点8：条件性的质量门检查 ==========
             stage('Quality Gate') {
                 when {
                     expression {
-                        // 只在 SonarQube 扫描成功执行时才运行质量门检查
+                        // 只在 SonarQube 扫描成功执行且不是社区版时才运行质量门检查
                         fileExists('src') && !env.SONARQUBE_COMMUNITY_EDITION.toBoolean()
                     }
                 }
@@ -275,7 +297,7 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点4：添加替代的质量检查阶段 ==========
+            // ========== 修改点9：添加替代的质量检查阶段 ==========
             stage('Basic Quality Check') {
                 when {
                     expression {
@@ -288,18 +310,12 @@ def call(Map userConfig = [:]) {
                         echo "🔍 运行基本质量检查（SonarQube 社区版）"
                         echo "⚠️ 注意：社区版不支持 PR 分析，跳过详细的质量门检查"
 
-                        // 这里可以添加其他基本质量检查，如：
-                        // - 代码风格检查
-                        // - 基础静态分析
-                        // - 测试覆盖率检查等
-
                         dir('src') {
-                            // 示例：运行测试并检查覆盖率
+                            // 基本质量检查命令
                             sh '''
                                 echo "运行基本质量检查..."
                                 # 这里可以添加你的基本检查命令
                                 # 例如：mvn checkstyle:check || echo "Checkstyle 检查失败但继续构建"
-                                # 例如：检查测试是否通过
                                 echo "基本质量检查完成"
                             '''
                         }
@@ -313,7 +329,7 @@ def call(Map userConfig = [:]) {
                 cleanWs()
                 echo "Pipeline 执行完成 - 结果: ${currentBuild.result}"
 
-                // ========== 修改点5：根据 SonarQube 版本调整构建后处理 ==========
+                // ========== 修改点10：根据 SonarQube 版本调整构建后处理 ==========
                 script {
                     if (env.SONARQUBE_COMMUNITY_EDITION.toBoolean()) {
                         echo "ℹ️ SonarQube 社区版模式：跳过 PR 特定的质量门检查"
