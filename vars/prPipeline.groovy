@@ -1,20 +1,25 @@
 def call(Map userConfig = [:]) {
     def config = org.yakiv.Config.mergeConfig(userConfig)
 
-    // ========== 修改点3：移除严格的环境变量检查，改为友好提示 ==========
+    // ========== 修改点1：增强 PR 事件检测逻辑 ==========
     echo "=== PR Pipeline 详细检测 ==="
     echo "CHANGE_ID: ${env.CHANGE_ID}"
     echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
     echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+    echo "BRANCH_NAME: ${env.BRANCH_NAME}"
+    echo "GIT_BRANCH: ${env.GIT_BRANCH}"
 
-    // 如果不是 PR 事件，给出友好提示但不报错
-    if (!env.CHANGE_ID) {
-        echo "⚠️ 警告：当前构建没有 CHANGE_ID，可能不是标准的 PR 事件"
-        echo "将继续执行，但某些功能可能无法正常工作"
+    // 检测多种 PR 标识
+    def isPR = env.CHANGE_ID || (env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')) || (env.GIT_BRANCH && env.GIT_BRANCH.contains('PR-'))
+
+    if (!isPR) {
+        echo "⚠️ 警告：当前构建没有检测到 PR 事件的标准标识"
+        echo "将继续执行，但某些 PR 特定功能可能无法正常工作"
     } else {
-        echo "✅ 确认：这是 PR #${env.CHANGE_ID} 事件，继续执行PR流水线"
-        echo "PR 源分支: ${env.CHANGE_BRANCH}"
-        echo "PR 目标分支: ${env.CHANGE_TARGET}"
+        echo "✅ 确认：检测到 PR 事件，继续执行PR流水线"
+        if (env.CHANGE_ID) {
+            echo "PR #${env.CHANGE_ID} - ${env.CHANGE_BRANCH} -> ${env.CHANGE_TARGET}"
+        }
     }
 
     pipeline {
@@ -43,33 +48,50 @@ def call(Map userConfig = [:]) {
             stage('Checkout PR') {
                 steps {
                     script {
-                        // ========== 修改点4：增强 PR 检出逻辑 ==========
                         echo "开始检出 PR 代码..."
 
-                        checkout([
+                        // ========== 修改点2：改进 PR 检出逻辑，支持多种场景 ==========
+                        def checkoutConfig = [
                                 $class: 'GitSCM',
-                                branches: [[name: 'refs/pull/${CHANGE_ID}/head']],
                                 extensions: [
                                         [$class: 'CleanCheckout'],
-                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src'],
-                                        [$class: 'LocalBranch', localBranch: 'PR-${CHANGE_ID}']
+                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src']
                                 ],
                                 userRemoteConfigs: [[
-                                                            refspec: '+refs/pull/*:refs/remotes/origin/pr/*',
                                                             url: "https://github.com/${config.org}/${config.repo}.git",
                                                             credentialsId: 'github-token'
                                                     ]]
-                        ])
+                        ]
+
+                        if (env.CHANGE_ID) {
+                            // 标准 PR 事件检出方式
+                            echo "使用 PR 标准检出方式: refs/pull/${CHANGE_ID}/head"
+                            checkoutConfig.branches = [[name: 'refs/pull/${CHANGE_ID}/head']]
+                            checkoutConfig.userRemoteConfigs[0].refspec = '+refs/pull/*:refs/remotes/origin/pr/*'
+                        } else if (env.BRANCH_NAME && env.BRANCH_NAME.startsWith('PR-')) {
+                            // GitHub 分支源插件的检出方式
+                            echo "使用 GitHub 分支源检出方式: ${env.BRANCH_NAME}"
+                            checkoutConfig.branches = [[name: env.BRANCH_NAME]]
+                        } else {
+                            // 回退到主分支
+                            echo "⚠️ 使用回退检出方式: main"
+                            checkoutConfig.branches = [[name: 'main']]
+                        }
+
+                        checkout(checkoutConfig)
 
                         dir('src') {
                             sh 'git log -1 --oneline'
+                            sh 'git branch -a'
                         }
 
                         // 调试信息
-                        echo "PR Environment Variables:"
+                        echo "环境变量详情:"
                         echo "CHANGE_ID: ${env.CHANGE_ID}"
                         echo "CHANGE_BRANCH: ${env.CHANGE_BRANCH}"
                         echo "CHANGE_TARGET: ${env.CHANGE_TARGET}"
+                        echo "BRANCH_NAME: ${env.BRANCH_NAME}"
+                        echo "GIT_BRANCH: ${env.GIT_BRANCH}"
                         echo "SCAN_INTENSITY: ${env.SCAN_INTENSITY}"
                         echo "SKIP_DEPENDENCY_CHECK: ${config.skipDependencyCheck}"
                     }
@@ -110,22 +132,27 @@ def call(Map userConfig = [:]) {
                             }
                             success {
                                 script {
-                                    updateGitHubCommitStatus(
-                                            state: 'SUCCESS',
-                                            context: 'security-scan',
-                                            description: '安全扫描通过',
-                                            targetUrl: "${env.BUILD_URL}security-scan/"
-                                    )
+                                    // ========== 修改点3：只在有 PR 上下文时更新状态 ==========
+                                    if (env.CHANGE_ID) {
+                                        updateGitHubCommitStatus(
+                                                state: 'SUCCESS',
+                                                context: 'security-scan',
+                                                description: '安全扫描通过',
+                                                targetUrl: "${env.BUILD_URL}security-scan/"
+                                        )
+                                    }
                                 }
                             }
                             failure {
                                 script {
-                                    updateGitHubCommitStatus(
-                                            state: 'FAILURE',
-                                            context: 'security-scan',
-                                            description: '安全扫描失败',
-                                            targetUrl: "${env.BUILD_URL}security-scan/"
-                                    )
+                                    if (env.CHANGE_ID) {
+                                        updateGitHubCommitStatus(
+                                                state: 'FAILURE',
+                                                context: 'security-scan',
+                                                description: '安全扫描失败',
+                                                targetUrl: "${env.BUILD_URL}security-scan/"
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -157,22 +184,26 @@ def call(Map userConfig = [:]) {
                             }
                             success {
                                 script {
-                                    updateGitHubCommitStatus(
-                                            state: 'SUCCESS',
-                                            context: 'build',
-                                            description: '构建测试通过',
-                                            targetUrl: "${env.BUILD_URL}testReport/"
-                                    )
+                                    if (env.CHANGE_ID) {
+                                        updateGitHubCommitStatus(
+                                                state: 'SUCCESS',
+                                                context: 'build',
+                                                description: '构建测试通过',
+                                                targetUrl: "${env.BUILD_URL}testReport/"
+                                        )
+                                    }
                                 }
                             }
                             failure {
                                 script {
-                                    updateGitHubCommitStatus(
-                                            state: 'FAILURE',
-                                            context: 'build',
-                                            description: '构建测试失败',
-                                            targetUrl: "${env.BUILD_URL}testReport/"
-                                    )
+                                    if (env.CHANGE_ID) {
+                                        updateGitHubCommitStatus(
+                                                state: 'FAILURE',
+                                                context: 'build',
+                                                description: '构建测试失败',
+                                                targetUrl: "${env.BUILD_URL}testReport/"
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -194,22 +225,26 @@ def call(Map userConfig = [:]) {
                 post {
                     success {
                         script {
-                            updateGitHubCommitStatus(
-                                    state: 'SUCCESS',
-                                    context: 'quality-gate',
-                                    description: '质量门检查通过',
-                                    targetUrl: "${env.BUILD_URL}"
-                            )
+                            if (env.CHANGE_ID) {
+                                updateGitHubCommitStatus(
+                                        state: 'SUCCESS',
+                                        context: 'quality-gate',
+                                        description: '质量门检查通过',
+                                        targetUrl: "${env.BUILD_URL}"
+                                )
+                            }
                         }
                     }
                     failure {
                         script {
-                            updateGitHubCommitStatus(
-                                    state: 'FAILURE',
-                                    context: 'quality-gate',
-                                    description: '质量门检查失败',
-                                    targetUrl: "${env.BUILD_URL}"
-                            )
+                            if (env.CHANGE_ID) {
+                                updateGitHubCommitStatus(
+                                        state: 'FAILURE',
+                                        context: 'quality-gate',
+                                        description: '质量门检查失败',
+                                        targetUrl: "${env.BUILD_URL}"
+                                )
+                            }
                         }
                     }
                 }
@@ -225,22 +260,22 @@ def call(Map userConfig = [:]) {
             }
             success {
                 script {
-                    // ========== 修改点5：只在有 CHANGE_ID 时发送评论 ==========
+                    // ========== 修改点4：增强 PR 评论逻辑 ==========
                     if (env.CHANGE_ID) {
                         // PR 成功评论
                         githubPRComment comment: """✅ PR验证通过！所有检查均成功完成。
 
-                        📊 **构建详情**: ${env.BUILD_URL}
-                        
-                        ### 检查结果:
-                        - ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
-                        - ✅ 构建测试通过  
-                        - ✅ 质量门检查通过
-                        - ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
-                        
-                        **注意**: 只有通过所有质量检查才允许合并。"""
+📊 **构建详情**: ${env.BUILD_URL}
+
+### 检查结果:
+- ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
+- ✅ 构建测试通过  
+- ✅ 质量门检查通过
+- ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
+
+**注意**: 只有通过所有质量检查才允许合并。"""
                     } else {
-                        echo "没有 CHANGE_ID，跳过 PR 评论"
+                        echo "没有检测到 PR 上下文，跳过 PR 评论"
                     }
                 }
             }
@@ -250,15 +285,15 @@ def call(Map userConfig = [:]) {
                         // PR 失败评论
                         githubPRComment comment: """❌ PR验证失败！请检查以下问题：
 
-                        📊 **构建详情**: ${env.BUILD_URL}
-                        
-                        ### 失败项目:
-                        - 🔍 查看构建日志: ${env.BUILD_URL}console
-                        - 🛡️ 安全扫描结果: ${env.BUILD_URL}security-scan/
-                        - ⚗️ 测试报告: ${env.BUILD_URL}testReport/
-                        - 📈 质量门结果: ${config.sonarUrl}/dashboard?id=${config.projectName}-pr-${env.CHANGE_ID}
-                        
-                        **重要**: 此PR未通过质量门禁，只允许force merge。"""
+📊 **构建详情**: ${env.BUILD_URL}
+
+### 失败项目:
+- 🔍 查看构建日志: ${env.BUILD_URL}console
+- 🛡️ 安全扫描结果: ${env.BUILD_URL}security-scan/
+- ⚗️ 测试报告: ${env.BUILD_URL}testReport/
+- 📈 质量门结果: ${config.sonarUrl}/dashboard?id=${config.projectName}-pr-${env.CHANGE_ID}
+
+**重要**: 此PR未通过质量门禁，只允许force merge。"""
                     }
                 }
             }
@@ -268,9 +303,9 @@ def call(Map userConfig = [:]) {
                         // PR 不稳定评论
                         githubPRComment comment: """⚠️ PR验证不稳定！部分检查未通过。
 
-                        📊 **构建详情**: ${env.BUILD_URL}
-                        
-                        请检查测试报告和安全扫描结果，修复问题后重新触发构建。"""
+📊 **构建详情**: ${env.BUILD_URL}
+
+请检查测试报告和安全扫描结果，修复问题后重新触发构建。"""
                     }
                 }
             }
