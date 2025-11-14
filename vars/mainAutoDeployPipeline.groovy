@@ -26,8 +26,9 @@ def call(Map userConfig = [:]) {
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
-            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+//            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
+//            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+            APP_VERSION = "${BUILD_TIMESTAMP}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
             PROJECT_DIR = "."
 
@@ -46,7 +47,7 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_NAME = config.projectName
                         env.PROJECT_REPO_URL = config.projectRepoUrl
                         env.PROJECT_BRANCH = config.projectBranch ?: 'master'
-                        env.IS_RELEASE = config.isRelease.toString()
+//                        env.IS_RELEASE = config.isRelease.toString()
                         env.EMAIL_RECIPIENTS = config.defaultEmail
 
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
@@ -76,7 +77,7 @@ def call(Map userConfig = [:]) {
                                 git_commit: env.GIT_COMMIT,
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
-                                is_release: env.IS_RELEASE.toBoolean(),
+//                                is_release: env.IS_RELEASE.toBoolean(),
                                 pipeline_type: 'MASTER_AUTO_DEPLOY',
                                 deployment_environments: env.DEPLOYMENT_ENVIRONMENTS
                         ]
@@ -100,8 +101,8 @@ def call(Map userConfig = [:]) {
                             script {
                                 def buildTools = new org.yakiv.BuildTools(steps, env)
                                 buildTools.mavenBuild(
-                                        version: env.APP_VERSION,
-                                        isRelease: env.IS_RELEASE.toBoolean()
+                                        version: env.APP_VERSION
+//                                        isRelease: env.IS_RELEASE.toBoolean()
                                 )
 
                                 buildTools.buildDockerImage(

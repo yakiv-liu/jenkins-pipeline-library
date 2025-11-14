@@ -48,8 +48,8 @@ def call(Map userConfig = [:]) {
                     script {
                         def buildTools = new org.yakiv.BuildTools(steps, env)
                         buildTools.mavenBuild(
-                                version: env.APP_VERSION,
-                                isRelease: params.IS_RELEASE
+                                version: env.APP_VERSION
+//                                isRelease: params.IS_RELEASE
                         )
                     }
                 }
@@ -126,8 +126,8 @@ def call(Map userConfig = [:]) {
                             version: env.APP_VERSION,
                             status: currentBuild.result,
                             recipients: params.EMAIL_RECIPIENTS,
-                            buildUrl: env.BUILD_URL,
-                            isRelease: params.IS_RELEASE
+                            buildUrl: env.BUILD_URL
+//                            isRelease: params.IS_RELEASE
                     )
 
                     archiveArtifacts artifacts: '**/target/*.jar,**/trivy-report.html', fingerprint: true

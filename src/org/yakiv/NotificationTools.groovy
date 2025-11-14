@@ -144,7 +144,7 @@ class NotificationTools implements Serializable {
                         project: config.project,
                         version: config.version,
                         buildUrl: config.buildUrl,
-                        isRelease: config.isRelease ? 'Yes' : 'No',
+//                        isRelease: config.isRelease ? 'Yes' : 'No',
                         timestamp: new Date().format("yyyy-MM-dd HH:mm:ss z")
                 ]
 
@@ -157,7 +157,6 @@ class NotificationTools implements Serializable {
                     版本: ${config.version}
                     状态: ${finalStatus}
                     构建链接: ${config.buildUrl}
-                    发布版本: ${config.isRelease ? '是' : '否'}
                     时间: ${new Date().format("yyyy-MM-dd HH:mm:ss z")}
                 """
             }

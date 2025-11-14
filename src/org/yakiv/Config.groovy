@@ -140,8 +140,8 @@ class Config implements Serializable {
                 // 运行时参数默认值
                 deployEnv: 'staging',
                 rollback: false,
-                rollbackVersion: '',
-                isRelease: false
+                rollbackVersion: ''
+//                isRelease: false
         ]
     }
 

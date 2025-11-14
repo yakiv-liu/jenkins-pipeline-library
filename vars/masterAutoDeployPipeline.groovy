@@ -26,8 +26,9 @@ def call(Map userConfig = [:]) {
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
-            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+//            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
+//            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+            APP_VERSION = "${BUILD_TIMESTAMP}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
             PROJECT_DIR = "."
 
@@ -46,7 +47,7 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_NAME = config.projectName
                         env.PROJECT_REPO_URL = config.projectRepoUrl
                         env.PROJECT_BRANCH = config.projectBranch ?: 'master'
-                        env.IS_RELEASE = config.isRelease.toString()
+//                        env.IS_RELEASE = config.isRelease.toString()
                         env.ROLLBACK = config.rollback.toString()
                         env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
                         env.EMAIL_RECIPIENTS = config.defaultEmail
@@ -58,7 +59,7 @@ def call(Map userConfig = [:]) {
                             error "master pipeline 不支持回滚操作，请使用手动部署进行回滚"
                         }
 
-                        currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-MASTER"
+                        currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}"
 
                         // 显示配置信息
                         echo "项目: ${env.PROJECT_NAME}"
@@ -83,7 +84,7 @@ def call(Map userConfig = [:]) {
                                 git_commit: env.GIT_COMMIT,
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
-                                is_release: env.IS_RELEASE.toBoolean(),
+//                                is_release: env.IS_RELEASE.toBoolean(),
                                 pipeline_type: 'MASTER',
                                 deployment_environments: env.DEPLOYMENT_ENVIRONMENTS
                         ]
@@ -107,8 +108,8 @@ def call(Map userConfig = [:]) {
                             script {
                                 def buildTools = new org.yakiv.BuildTools(steps, env)
                                 buildTools.mavenBuild(
-                                        version: env.APP_VERSION,
-                                        isRelease: env.IS_RELEASE.toBoolean()
+                                        version: env.APP_VERSION
+//                                        isRelease: env.IS_RELEASE.toBoolean()
                                 )
 
                                 buildTools.buildDockerImage(

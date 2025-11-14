@@ -28,8 +28,9 @@ def call(Map userConfig = [:]) {
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
-            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+//            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
+//            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
+            APP_VERSION = "${BUILD_TIMESTAMP}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
             // ========== 修改点2：项目目录改为当前目录 ==========
             PROJECT_DIR = "."
@@ -50,7 +51,7 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_BRANCH = config.projectBranch ?: 'main'
 
                         env.DEPLOY_ENV = config.deployEnv
-                        env.IS_RELEASE = config.isRelease.toString()
+//                        env.IS_RELEASE = config.isRelease.toString()
                         env.ROLLBACK = config.rollback.toString()
                         env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
                         env.EMAIL_RECIPIENTS = config.defaultEmail
@@ -100,7 +101,7 @@ def call(Map userConfig = [:]) {
                                 git_commit: env.GIT_COMMIT,
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
-                                is_release: env.IS_RELEASE.toBoolean(),
+//                                is_release: env.IS_RELEASE.toBoolean(),
                                 rollback_enabled: true
                         ]
 
@@ -129,8 +130,8 @@ def call(Map userConfig = [:]) {
                             script {
                                 def buildTools = new org.yakiv.BuildTools(steps, env)
                                 buildTools.mavenBuild(
-                                        version: env.APP_VERSION,
-                                        isRelease: env.IS_RELEASE.toBoolean()
+                                        version: env.APP_VERSION
+//                                        isRelease: env.IS_RELEASE.toBoolean()
                                 )
 
                                 buildTools.buildDockerImage(

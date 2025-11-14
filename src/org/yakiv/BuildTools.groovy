@@ -23,8 +23,6 @@ class BuildTools implements Serializable {
                     export MAVEN_OPTS="-Xmx512m -Xms256m -XX:MaxMetaspaceSize=256m"
                     
                     echo "执行 Maven 部署，版本: ${config.version}"
-                    echo "是否为发布版本: ${config.isRelease}"
-                    
                     # 使用内存优化的测试配置
                     mvn -s \$MAVEN_SETTINGS clean deploy \
                         '-Drevision=${config.version}' \

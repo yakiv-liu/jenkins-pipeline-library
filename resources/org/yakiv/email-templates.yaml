@@ -66,7 +66,6 @@ templates:
           <p><strong>Version:</strong> {version}</p>
           <p><strong>Status:</strong> {status}</p>
           <p><strong>Build URL:</strong> <a href="{buildUrl}">{buildUrl}</a></p>
-          <p><strong>Release:</strong> {isRelease}</p>
       </body>
       </html>
 
