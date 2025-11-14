@@ -37,6 +37,9 @@ def call(Map userConfig = [:]) {
 
             // === 新增环境变量：跳过依赖检查标志 ===
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
+
+            // === 新增环境变量：构建模式 ===
+            BUILD_MODE = "${config.buildMode ?: 'full-pipeline'}"
         }
 
         stages {
@@ -58,10 +61,17 @@ def call(Map userConfig = [:]) {
 
                         // === 显示依赖检查配置 ===
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
+                        // === 显示构建模式 ===
+                        echo "构建模式: ${env.BUILD_MODE}"
 
                         // 参数验证
                         if (env.ROLLBACK.toBoolean() && !env.ROLLBACK_VERSION) {
                             error "回滚操作必须指定回滚版本号"
+                        }
+
+                        // === 修改点：在build-only模式下禁用回滚 ===
+                        if (env.ROLLBACK.toBoolean() && env.BUILD_MODE == 'build-only') {
+                            error "回滚操作在 build-only 模式下不可用"
                         }
 
                         if (env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod') {
@@ -102,7 +112,8 @@ def call(Map userConfig = [:]) {
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
 //                                is_release: env.IS_RELEASE.toBoolean(),
-                                rollback_enabled: true
+                                build_mode: env.BUILD_MODE,  // === 新增字段：构建模式 ===
+                                rollback_enabled: (env.BUILD_MODE != 'build-only')  // === 修改点：在build-only模式下禁用回滚 ===
                         ]
 
                         // 验证目录结构
@@ -120,63 +131,77 @@ def call(Map userConfig = [:]) {
             }
 
             // ========== 修改点4：移除原有的额外检出步骤，其他阶段保持不变 ==========
-            stage('Build & Security Scan') {
+            stage('Build') {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
                 }
-                stages {
-                    stage('Build') {
+                steps {
+                    script {
+                        def buildTools = new org.yakiv.BuildTools(steps, env)
+                        buildTools.mavenBuild(
+                                version: env.APP_VERSION
+//                                        isRelease: env.IS_RELEASE.toBoolean()
+                        )
+
+                        buildTools.buildDockerImage(
+                                projectName: env.PROJECT_NAME,
+                                version: env.APP_VERSION,
+                                gitCommit: env.GIT_COMMIT
+                        )
+
+                        // === 修改点：在build-only模式下跳过镜像推送 ===
+                        if (env.BUILD_MODE != 'build-only') {
+                            buildTools.pushDockerImage(
+                                    projectName: env.PROJECT_NAME,
+                                    version: env.APP_VERSION,
+                                    harborUrl: env.HARBOR_URL
+                            )
+                        } else {
+                            echo "🔒 build-only 模式：跳过 Docker 镜像推送"
+                        }
+                    }
+                }
+            }
+
+            // === 修改点：将安全扫描拆分为独立阶段，并在build-only模式下跳过 ===
+            stage('Security Scan') {
+                when {
+                    allOf {
+                        expression { !env.ROLLBACK.toBoolean() }
+                        expression { env.BUILD_MODE != 'build-only' }
+                    }
+                }
+                parallel {
+                    stage('Trivy Scan') {
                         steps {
                             script {
                                 def buildTools = new org.yakiv.BuildTools(steps, env)
-                                buildTools.mavenBuild(
-                                        version: env.APP_VERSION
-//                                        isRelease: env.IS_RELEASE.toBoolean()
-                                )
-
-                                buildTools.buildDockerImage(
-                                        projectName: env.PROJECT_NAME,
-                                        version: env.APP_VERSION,
-                                        gitCommit: env.GIT_COMMIT
-                                )
-
                                 buildTools.trivyScan(
                                         image: "${env.HARBOR_URL}/${env.PROJECT_NAME}:${env.APP_VERSION}"
-                                )
-
-                                buildTools.pushDockerImage(
-                                        projectName: env.PROJECT_NAME,
-                                        version: env.APP_VERSION,
-                                        harborUrl: env.HARBOR_URL
                                 )
                             }
                         }
                     }
-
-                    stage('Security Scan') {
-                        parallel {
-                            stage('SonarQube Scan') {
-                                steps {
-                                    script {
-                                        def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                        securityTools.fastSonarScan(
-                                                projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
-                                                projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
-                                                branch: "${env.PROJECT_BRANCH}"
-                                        )
-                                    }
-                                }
+                    stage('SonarQube Scan') {
+                        steps {
+                            script {
+                                def securityTools = new org.yakiv.SecurityTools(steps, env)
+                                securityTools.fastSonarScan(
+                                        projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
+                                        projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
+                                        branch: "${env.PROJECT_BRANCH}"
+                                )
                             }
-                            stage('Dependency Check') {
-                                when {
-                                    expression { env.SKIP_DEPENDENCY_CHECK == 'false' }
-                                }
-                                steps {
-                                    script {
-                                        def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                        securityTools.fastDependencyCheck()
-                                    }
-                                }
+                        }
+                    }
+                    stage('Dependency Check') {
+                        when {
+                            expression { env.SKIP_DEPENDENCY_CHECK == 'false' }
+                        }
+                        steps {
+                            script {
+                                def securityTools = new org.yakiv.SecurityTools(steps, env)
+                                securityTools.fastDependencyCheck()
                             }
                         }
                     }
@@ -185,7 +210,10 @@ def call(Map userConfig = [:]) {
 
             stage('Quality Gate') {
                 when {
-                    expression { !env.ROLLBACK.toBoolean() }
+                    allOf {
+                        expression { !env.ROLLBACK.toBoolean() }
+                        expression { env.BUILD_MODE != 'build-only' }
+                    }
                 }
                 steps {
                     script {
@@ -222,9 +250,12 @@ def call(Map userConfig = [:]) {
 
             stage('Deploy') {
                 when {
-                    expression {
-                        !env.ROLLBACK.toBoolean() &&
-                                (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod')
+                    allOf {
+                        expression { !env.ROLLBACK.toBoolean() }
+                        expression {
+                            (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') &&
+                                    env.BUILD_MODE != 'build-only'
+                        }
                     }
                 }
                 steps {
@@ -275,7 +306,10 @@ def call(Map userConfig = [:]) {
 
             stage('Rollback') {
                 when {
-                    expression { env.ROLLBACK.toBoolean() }
+                    allOf {
+                        expression { env.ROLLBACK.toBoolean() }
+                        expression { env.BUILD_MODE != 'build-only' }
+                    }
                 }
                 steps {
                     script {
@@ -321,7 +355,10 @@ def call(Map userConfig = [:]) {
 
             stage('Post-Deployment Test') {
                 when {
-                    expression { !env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod' }
+                    allOf {
+                        expression { !env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod' }
+                        expression { env.BUILD_MODE != 'build-only' }
+                    }
                 }
                 steps {
                     script {
@@ -350,6 +387,8 @@ def call(Map userConfig = [:]) {
                         pipelineType = 'ROLLBACK'
                     } else if (currentBuild.result == 'ABORTED') {
                         pipelineType = 'ABORTED'
+                    } else if (env.BUILD_MODE == 'build-only') {
+                        pipelineType = 'BUILD_ONLY'  // === 新增流水线类型 ===
                     }
 
                     notificationTools.sendPipelineNotification(
@@ -365,15 +404,22 @@ def call(Map userConfig = [:]) {
                     )
 
                     // === 修改点：添加备份文件到归档 ===
-                    archiveArtifacts artifacts: 'deployment-manifest.json,trivy-report.html,backups/*', fingerprint: true
-                    publishHTML([
-                            allowMissing: false,
-                            alwaysLinkToLastBuild: true,
-                            keepAll: true,
-                            reportDir: '.',
-                            reportFiles: 'trivy-report.html',
-                            reportName: '安全扫描报告'
-                    ])
+                    def artifactsToArchive = ['deployment-manifest.json', 'backups/*']
+
+                    // === 修改点：在非build-only模式下才归档安全报告 ===
+                    if (env.BUILD_MODE != 'build-only' && fileExists('trivy-report.html')) {
+                        artifactsToArchive << 'trivy-report.html'
+                        publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: '.',
+                                reportFiles: 'trivy-report.html',
+                                reportName: '安全扫描报告'
+                        ])
+                    }
+
+                    archiveArtifacts artifacts: artifactsToArchive.join(','), fingerprint: true
 
                     cleanWs()
                 }
