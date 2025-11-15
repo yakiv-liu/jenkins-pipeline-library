@@ -24,16 +24,32 @@ class DatabaseTools implements Serializable {
             def dbDriver = configLoader.getDatabaseDriver()
 
             steps.echo "连接数据库: ${dbUrl.replace(dbPassword, '***')}"
+            steps.echo "使用驱动: ${dbDriver}"
 
-            return Sql.newInstance(
-                    dbUrl,
-                    dbUser,
-                    dbPassword,
-                    dbDriver
-            )
+            // === 修复点：显式加载驱动 ===
+            try {
+                // 尝试显式加载驱动类
+                Class.forName(dbDriver)
+                steps.echo "✅ PostgreSQL 驱动类加载成功"
+            } catch (ClassNotFoundException e) {
+                steps.echo "❌ 无法加载 PostgreSQL 驱动类: ${e.message}"
+                steps.echo "💡 请确保 PostgreSQL JDBC 驱动在 Jenkins 类路径中"
+                return null
+            }
+
+            // === 修复点：使用 DriverManager 而不是 Sql.newInstance ===
+            try {
+                def connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
+                steps.echo "✅ 数据库连接建立成功"
+                return new Sql(connection)
+            } catch (Exception e) {
+                steps.echo "❌ 数据库连接失败: ${e.message}"
+                return null
+            }
+
         } catch (Exception e) {
             steps.echo "❌ 数据库连接失败: ${e.message}"
-            throw e
+            return null
         }
     }
 
@@ -280,18 +296,23 @@ class DatabaseTools implements Serializable {
      * 测试数据库连接
      */
     def testConnection() {
+        def sql = null
         try {
-            def sql = getConnection()
+            sql = getConnection()
             if (sql == null) {
-                steps.echo "❌ 数据库连接不可用（驱动未安装）"
+                steps.echo "❌ 数据库连接不可用"
                 return false
             }
+
             def result = sql.firstRow("SELECT 1 as test")
             steps.echo "✅ 数据库连接测试成功"
             return true
+
         } catch (Exception e) {
             steps.echo "❌ 数据库连接测试失败: ${e.message}"
             return false
+        } finally {
+            sql?.close()
         }
     }
 
