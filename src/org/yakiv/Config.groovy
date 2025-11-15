@@ -118,6 +118,27 @@ class Config implements Serializable {
         return current
     }
 
+    // === 新增：获取数据库配置方法 ===
+    String getDatabaseUrl() {
+        def config = loadConfig()
+        return getConfigValue(config, 'infrastructure.database.url')
+    }
+
+    String getDatabaseUsername() {
+        def config = loadConfig()
+        return getConfigValue(config, 'infrastructure.database.username')
+    }
+
+    String getDatabasePassword() {
+        def config = loadConfig()
+        return getConfigValue(config, 'infrastructure.database.password')
+    }
+
+    String getDatabaseDriver() {
+        def config = loadConfig()
+        return getConfigValue(config, 'infrastructure.database.driver', 'org.postgresql.Driver')
+    }
+
     // 默认配置
     Map getDefaultConfig() {
         def config = loadConfig()
@@ -130,6 +151,12 @@ class Config implements Serializable {
                 trivyUrl: getConfigValue(config, 'infrastructure.trivy.url'),
                 backupDir: getConfigValue(config, 'infrastructure.backup.dir'),
 
+                // 数据库配置
+                databaseUrl: getDatabaseUrl(),
+                databaseUsername: getDatabaseUsername(),
+                databasePassword: getDatabasePassword(),
+                databaseDriver: getDatabaseDriver(),
+
                 // 默认项目配置
                 defaultEmail: getConfigValue(config, 'defaults.email'),
                 environments: getConfigValue(config, 'defaults.environments'),
@@ -141,7 +168,6 @@ class Config implements Serializable {
                 deployEnv: 'staging',
                 rollback: false,
                 rollbackVersion: ''
-//                isRelease: false
         ]
     }
 

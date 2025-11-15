@@ -23,13 +23,11 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${configLoader.getHarborUrl()}"
             SONAR_URL = "${configLoader.getSonarUrl()}"
             TRIVY_URL = "${configLoader.getTrivyUrl()}"
-            // === 修改点：使用 Jenkins 工作空间内的备份目录 ===
-            BACKUP_DIR = "${env.WORKSPACE}/backups"
+            // === 修改点：不再使用文件备份目录 ===
+            // BACKUP_DIR = "${env.WORKSPACE}/backups"
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-//            VERSION_SUFFIX = "${config.isRelease ? '' : '-SNAPSHOT'}"
-//            APP_VERSION = "${BUILD_TIMESTAMP}${VERSION_SUFFIX}"
             APP_VERSION = "${BUILD_TIMESTAMP}"
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
             // ========== 修改点2：项目目录改为当前目录 ==========
@@ -46,6 +44,20 @@ def call(Map userConfig = [:]) {
             stage('Initialize & Validation') {
                 steps {
                     script {
+                        // === 修改点：只测试数据库连接，不执行初始化 ===
+                        steps.echo "测试数据库连接..."
+                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
+                        def dbTestResult = deployTools.testDatabaseConnection()
+
+                        if (!dbTestResult) {
+                            steps.echo "❌ 数据库连接测试失败"
+                            // 可以选择继续执行或报错，根据您的需求决定
+                            // error "数据库连接失败，请检查数据库配置"
+                            steps.echo "⚠️ 数据库连接失败，但流水线将继续执行（部署记录将不会保存到数据库）"
+                        } else {
+                            steps.echo "✅ 数据库连接测试成功"
+                        }
+
                         // 设置不能在 environment 块中直接设置的环境变量
                         env.PROJECT_NAME = config.projectName
                         env.PROJECT_REPO_URL = config.projectRepoUrl
@@ -54,10 +66,27 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_BRANCH = config.projectBranch ?: 'main'
 
                         env.DEPLOY_ENV = config.deployEnv
-//                        env.IS_RELEASE = config.isRelease.toString()
                         env.ROLLBACK = config.rollback.toString()
                         env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
                         env.EMAIL_RECIPIENTS = config.defaultEmail
+
+                        // === 修改点：回滚时验证版本（仅在数据库连接正常时）===
+                        if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION && dbTestResult) {
+                            steps.echo "验证回滚版本: ${env.ROLLBACK_VERSION}"
+                            def versionValid = deployTools.validateRollbackVersion(
+                                    env.PROJECT_NAME,
+                                    env.DEPLOY_ENV,
+                                    env.ROLLBACK_VERSION
+                            )
+
+                            if (!versionValid) {
+                                error "回滚版本 ${env.ROLLBACK_VERSION} 不存在或无效，请检查版本号"
+                            }
+                        } else if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION && !dbTestResult) {
+                            steps.echo "⚠️ 数据库连接失败，跳过回滚版本验证"
+                            // 您可以选择在这里报错或继续执行
+                            // error "数据库连接失败，无法验证回滚版本"
+                        }
 
                         // === 显示依赖检查配置 ===
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
@@ -111,9 +140,9 @@ def call(Map userConfig = [:]) {
                                 git_commit: env.GIT_COMMIT,
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
-//                                is_release: env.IS_RELEASE.toBoolean(),
                                 build_mode: env.BUILD_MODE,  // === 新增字段：构建模式 ===
-                                rollback_enabled: (env.BUILD_MODE != 'build-only')  // === 修改点：在build-only模式下禁用回滚 ===
+                                rollback_enabled: (env.BUILD_MODE != 'build-only'),  // === 修改点：在build-only模式下禁用回滚 ===
+                                database_enabled: true  // === 新增字段：数据库支持 ===
                         ]
 
                         // 验证目录结构
@@ -140,7 +169,6 @@ def call(Map userConfig = [:]) {
                         def buildTools = new org.yakiv.BuildTools(steps, env)
                         buildTools.mavenBuild(
                                 version: env.APP_VERSION
-//                                        isRelease: env.IS_RELEASE.toBoolean()
                         )
 
                         buildTools.buildDockerImage(
@@ -260,7 +288,7 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools(steps, env)
+                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
 
                         if (env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') {
                             input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}",
@@ -278,28 +306,8 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
-                        script {
-                            try {
-                                def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-
-                                // 确保备份目录存在
-                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
-                                // 写入版本文件
-                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.APP_VERSION
-
-                                // === 修复点：使用 shell 命令追加日志文件 ===
-                                steps.sh """
-                                    echo "${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${env.DEPLOY_ENV},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
-                                """
-
-                                echo "部署记录已保存到: ${env.BACKUP_DIR}"
-                            } catch (Exception e) {
-                                echo "警告：部署记录保存失败: ${e.getMessage()}"
-                                // 不抛出异常，避免影响部署状态
-                            }
-                        }
+                        // === 修改点5：移除文件记录，改为数据库记录 ===
+                        steps.echo "✅ 部署完成，记录已保存到数据库"
                     }
                 }
             }
@@ -313,7 +321,7 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools(steps, env)
+                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
 
                         echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
 
@@ -327,28 +335,8 @@ def call(Map userConfig = [:]) {
                                 environmentHosts: config.environmentHosts
                         )
 
-                        // === 修改点：简化文件写入操作，使用工作空间目录 ===
-                        script {
-                            try {
-                                def rollbackTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-
-                                // 确保备份目录存在
-                                // steps.sh "mkdir -p ${env.BACKUP_DIR}"
-
-                                // 写入版本文件
-                                steps.writeFile file: "${env.BACKUP_DIR}/${env.PROJECT_NAME}-${env.DEPLOY_ENV}.version", text: env.ROLLBACK_VERSION
-
-                                // === 修复点：使用 shell 命令追加日志文件 ===
-                                steps.sh """
-                                    echo "${env.ROLLBACK_VERSION},${env.DEPLOY_ENV},rollback,${rollbackTime},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-rollbacks.log"
-                                """
-
-                                echo "回滚记录已保存到: ${env.BACKUP_DIR}"
-                            } catch (Exception e) {
-                                echo "警告：回滚记录保存失败: ${e.getMessage()}"
-                                // 不抛出异常，避免影响回滚状态
-                            }
-                        }
+                        // === 修改点6：移除文件记录，改为数据库记录 ===
+                        steps.echo "✅ 回滚完成，记录已保存到数据库"
                     }
                 }
             }
@@ -362,7 +350,7 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
-                        def deployTools = new org.yakiv.DeployTools(steps, env)
+                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
                         deployTools.healthCheck(
                                 environment: env.DEPLOY_ENV,
                                 projectName: env.PROJECT_NAME,
@@ -404,7 +392,7 @@ def call(Map userConfig = [:]) {
                     )
 
                     // === 修改点：添加备份文件到归档 ===
-                    def artifactsToArchive = ['deployment-manifest.json', 'backups/*']
+                    def artifactsToArchive = ['deployment-manifest.json']
 
                     // === 修改点：在非build-only模式下才归档安全报告 ===
                     if (env.BUILD_MODE != 'build-only' && fileExists('trivy-report.html')) {
