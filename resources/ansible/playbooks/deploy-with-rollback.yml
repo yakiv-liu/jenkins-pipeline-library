@@ -1,48 +1,25 @@
 ---
-- name: 部署应用并支持自动回滚
+- name: 部署应用（简化版，无内置回滚，依赖 Jenkins 自动回滚）
   hosts: all
   vars:
     app_name: "{{ project_name }}"
-    backup_dir: "{{ backup_dir | default('/opt/backups') }}"
-    max_backups: 10
-    health_check_timeout: 300
-    health_check_interval: 10
     target_host: "{{ ansible_host }}"
+    # 健康检查配置
+    health_check_max_retries: 12
+    health_check_retry_delay: 5
 
   tasks:
-    - name: 创建备份目录
-      file:
-        path: "{{ backup_dir }}"
-        state: directory
-        mode: '0755'
-
     - name: 创建应用目录
       file:
         path: "{{ app_dir }}"
         state: directory
         mode: '0755'
 
-    - name: 检查当前运行版本
-      shell: |
-        docker ps --filter "name={{ app_name }}" --format "{{ '{{' }}.Image{{ '}}' }}" 2>/dev/null | head -1 || echo "none"
-      register: current_version
-      changed_when: false
-
-    - name: 备份当前部署配置
-      when: current_version.stdout != "none"
-      shell: |
-        cat > "{{ backup_dir }}/{{ app_name }}-backup-$(date +%s).yml" << EOF
-        app_name: {{ app_name }}
-        current_version: "{{ current_version.stdout | regex_replace('.*:', '') | default('unknown') }}"
-        backup_time: "$(date -Iseconds)"
-        environment: "{{ deploy_env }}"
-        EOF
-      args:
-        executable: '/bin/bash'
-
     - name: 拉取新版本镜像
       shell: |
+        echo "开始拉取镜像: {{ harbor_url }}/{{ app_name }}:{{ app_version }}"
         docker pull "{{ harbor_url }}/{{ app_name }}:{{ app_version }}"
+        echo "镜像拉取完成"
       args:
         executable: '/bin/bash'
 
@@ -70,51 +47,60 @@
             memory: 512m
             cpus: 0.5
 
-        - name: 检查容器是否运行
-          shell: |
-            docker inspect --format='{{ '{{' }}.State.Running{{ '}}' }}' "{{ app_name }}" 2>/dev/null || echo "false"
-          register: container_running
-          changed_when: false
-
-        - name: 显示容器运行状态
-          debug:
-            var: container_running.stdout
-
-        - name: 等待回滚应用程序启动
+        - name: 等待应用程序启动
           wait_for:
-            delay: 7
+            delay: 10
 
-        - name: 测试应用程序是否响应
+        - name: 执行完整健康检查
           shell: |
-            for i in {1..10}; do
-              if curl -f -s -o /dev/null -w "%{http_code}" "http://localhost:{{ app_port }}/hello" | grep -q "200"; then
-                echo "应用程序已就绪"
-                exit 0
+            echo "开始健康检查，最多尝试 {{ health_check_max_retries }} 次，每次间隔 {{ health_check_retry_delay }} 秒"
+
+            for i in $(seq 1 {{ health_check_max_retries }}); do
+              echo "健康检查尝试 $i/{{ health_check_max_retries }}"
+
+              # 基础连通性检查
+              if curl -f -s -o /dev/null -w "HTTP状态: %{http_code}\n" "http://localhost:{{ app_port }}/health"; then
+                echo "✅ 基础健康检查通过"
+
+                # 应用业务检查（如果应用有业务端点）
+                if curl -f -s -o /dev/null -w "业务状态: %{http_code}\n" "http://localhost:{{ app_port }}/hello"; then
+                  echo "✅ 业务健康检查通过"
+                  echo "🎉 所有健康检查通过！"
+                  exit 0
+                else
+                  echo "⚠️ 业务健康检查失败，但基础健康检查通过"
+                fi
+              else
+                echo "❌ 基础健康检查失败"
               fi
-              sleep 3
+
+              # 如果不是最后一次尝试，等待后继续
+              if [ $i -lt {{ health_check_max_retries }} ]; then
+                echo "等待 {{ health_check_retry_delay }} 秒后重试..."
+                sleep {{ health_check_retry_delay }}
+              fi
             done
-            echo "应用程序启动超时"
+
+            echo "💥 健康检查最终失败"
             exit 1
-          register: app_ready_check
-          failed_when: app_ready_check.rc != 0
+          register: health_check_result
+          failed_when: health_check_result.rc != 0
 
-        - name: 显示应用程序就绪状态
+        - name: 记录部署成功
           debug:
-            var: app_ready_check.stdout
+            msg: "部署成功！应用程序已通过所有健康检查"
 
-        - name: 验证部署成功
-          debug:
-            msg: "部署成功！应用程序已启动并响应"
-
+      # === 修改点：简化 rescue 块，只记录诊断信息，不执行回滚 ===
       rescue:
-        - name: 部署失败 - 执行自动回滚
+        - name: 部署失败 - 记录诊断信息
           debug:
-            msg: "部署失败，开始执行自动回滚..."
+            msg: "部署失败，将由 Jenkins 触发自动回滚..."
 
         - name: 收集容器诊断信息
           block:
             - name: 检查最终容器状态
               shell: |
+                echo "检查容器状态..."
                 docker ps -a --filter "name={{ app_name }}" || echo "容器不存在"
               register: final_container_status
               failed_when: false
@@ -125,7 +111,8 @@
 
             - name: 获取容器日志
               shell: |
-                docker logs "{{ app_name }}" --tail 50 || echo "无法获取日志"
+                echo "获取容器日志..."
+                docker logs "{{ app_name }}" --tail 100 || echo "无法获取日志"
               register: final_container_logs
               failed_when: false
 
@@ -133,84 +120,37 @@
               debug:
                 var: final_container_logs.stdout
 
-            - name: 测试应用程序端点
+            - name: 检查系统资源
               shell: |
-                curl -f -m 5 "http://localhost:{{ app_port }}/hello" || echo "端点不可用"
-              register: endpoint_test
+                echo "检查系统资源..."
+                echo "内存使用:"
+                free -h || echo "无法获取内存信息"
+                echo "磁盘使用:"
+                df -h || echo "无法获取磁盘信息"
+                echo "当前运行的容器:"
+                docker ps || echo "无法获取容器列表"
+              register: system_info
               failed_when: false
 
-            - name: 显示端点测试结果
+            - name: 显示系统信息
               debug:
-                var: endpoint_test.stdout
+                var: system_info.stdout
 
           rescue:
             - name: 诊断信息收集失败
               debug:
                 msg: "无法收集完整的诊断信息"
 
-        - name: 停止失败容器
+        - name: 清理失败容器
           docker_container:
             name: "{{ app_name }}"
             state: absent
           ignore_errors: yes
 
-        - name: 查找最新备份版本
-          find:
-            paths: "{{ backup_dir }}"
-            patterns: "{{ app_name }}-backup-*.yml"
-          register: available_backups
+        - name: 记录部署失败信息
+          debug:
+            msg: "部署失败信息已记录，Jenkins 将触发自动回滚"
 
-        - name: 从备份文件获取回滚版本号
-          when: available_backups.files | length > 0
-          include_vars:
-            file: "{{ (available_backups.files | sort(attribute='mtime') | last).path }}"
-
-        - name: 启动回滚版本
-          when: current_version is defined and current_version.stdout != "none"
-          docker_container:
-            name: "{{ app_name }}"
-            image: "{{ current_version.stdout }}"
-            state: started
-            restart_policy: always
-            ports:
-              - "{{ app_port }}:{{ app_port }}"
-            env:
-              SPRING_PROFILES_ACTIVE: "{{ deploy_env }}"
-
-        - name: 等待回滚应用程序启动
-          wait_for:
-            delay: 15
-
-        - name: 验证回滚成功
-          when: current_version is defined and current_version.stdout != "none"
-          shell: |
-            curl -f -s "http://localhost:{{ app_port }}/hello" && echo "回滚成功" || echo "回滚失败"
-          register: rollback_test
-          failed_when: rollback_test.rc != 0
-
-        - name: 记录回滚操作
-          shell: |
-            cat > "{{ backup_dir }}/{{ app_name }}-rollback-$(date +%s).yml" << EOF
-            rollback_time: "$(date -Iseconds)"
-            failed_version: "{{ app_version }}"
-            rollback_version: "{{ current_version.stdout }}"
-            environment: "{{ deploy_env }}"
-            reason: "Deployment failed, auto-rollback triggered"
-            EOF
-          args:
-            executable: '/bin/bash'
-
-        - name: 抛出回滚完成异常
+        - name: 抛出部署失败异常
           fail:
-            msg: "部署失败，已自动回滚到上一个稳定版本"
-
-    # === 修改点：使用简单的 shell 命令清理备份，避免模板问题 ===
-    - name: 清理旧备份文件
-      shell: |
-        # 保留最新的 {{ max_backups }} 个备份文件
-        cd "{{ backup_dir }}"
-        ls -1t {{ app_name }}-backup-*.yml 2>/dev/null | tail -n +{{ max_backups + 1 }} | xargs rm -f -- || echo "没有需要清理的旧备份"
-      args:
-        executable: '/bin/bash'
-      failed_when: false
-      changed_when: false
+            msg: "部署失败，将由 Jenkins 触发自动回滚。健康检查状态: {{ health_check_result.rc }}"

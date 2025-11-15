@@ -38,90 +38,28 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 初始化数据库表
-     */
-//    def initializeDatabase() {
-//        def sql = null
-//        try {
-//            sql = getConnection()
-//
-//            // 创建部署记录表
-//            def createDeploymentTable = """
-//                CREATE TABLE IF NOT EXISTS deployment_records (
-//                    id SERIAL PRIMARY KEY,
-//                    project_name VARCHAR(100) NOT NULL,
-//                    environment VARCHAR(50) NOT NULL,
-//                    version VARCHAR(100) NOT NULL,
-//                    git_commit VARCHAR(50),
-//                    build_url VARCHAR(500),
-//                    build_timestamp TIMESTAMP NOT NULL,
-//                    deploy_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-//                    status VARCHAR(20) DEFAULT 'SUCCESS',
-//                    jenkins_build_number INTEGER,
-//                    jenkins_job_name VARCHAR(200),
-//                    deploy_user VARCHAR(100),
-//                    metadata JSONB
-//                )
-//            """
-//
-//            // 创建回滚记录表
-//            def createRollbackTable = """
-//                CREATE TABLE IF NOT EXISTS rollback_records (
-//                    id SERIAL PRIMARY KEY,
-//                    project_name VARCHAR(100) NOT NULL,
-//                    environment VARCHAR(50) NOT NULL,
-//                    rollback_version VARCHAR(100) NOT NULL,
-//                    current_version VARCHAR(100) NOT NULL,
-//                    rollback_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-//                    build_url VARCHAR(500),
-//                    jenkins_build_number INTEGER,
-//                    jenkins_job_name VARCHAR(200),
-//                    rollback_user VARCHAR(100),
-//                    reason TEXT,
-//                    status VARCHAR(20) DEFAULT 'SUCCESS'
-//                )
-//            """
-//
-//            sql.execute(createDeploymentTable)
-//            sql.execute(createRollbackTable)
-//
-//            // 创建索引
-//            try {
-//                sql.execute("CREATE INDEX IF NOT EXISTS idx_deployment_project_env ON deployment_records(project_name, environment)")
-//                sql.execute("CREATE INDEX IF NOT EXISTS idx_deployment_version ON deployment_records(version)")
-//                sql.execute("CREATE INDEX IF NOT EXISTS idx_deployment_time ON deployment_records(deploy_time)")
-//                sql.execute("CREATE INDEX IF NOT EXISTS idx_rollback_project_env ON rollback_records(project_name, environment)")
-//                sql.execute("CREATE INDEX IF NOT EXISTS idx_rollback_time ON rollback_records(rollback_time)")
-//                sql.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_unique ON deployment_records(project_name, environment, version)")
-//            } catch (Exception e) {
-//                steps.echo "⚠️ 创建索引失败（可能已存在）: ${e.message}"
-//            }
-//
-//            steps.echo "✅ 数据库表初始化完成"
-//
-//        } catch (Exception e) {
-//            steps.echo "❌ 数据库初始化失败: ${e.message}"
-//            throw e
-//        } finally {
-//            sql?.close()
-//        }
-//    }
-
-    /**
      * 记录部署信息到数据库
      */
+    // 简化部署记录方法，只记录元数据
+/**
+ * 记录部署信息到数据库（简化版）
+ */
     def recordDeployment(Map config) {
         def sql = null
         try {
             sql = getConnection()
 
             def insertSql = """
-                INSERT INTO deployment_records (
-                    project_name, environment, version, git_commit, 
-                    build_url, build_timestamp, jenkins_build_number,
-                    jenkins_job_name, deploy_user, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-            """
+            INSERT INTO deployment_records (
+                project_name, environment, version, git_commit, 
+                build_url, build_timestamp, jenkins_build_number,
+                jenkins_job_name, deploy_user, metadata,
+                jenkins_build_url, jenkins_console_url, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
+        """
+
+            // 构建 Jenkins 控制台 URL
+            def consoleUrl = "${config.buildUrl}console"
 
             sql.executeInsert(insertSql, [
                     config.projectName,
@@ -133,14 +71,79 @@ class DatabaseTools implements Serializable {
                     config.jenkinsBuildNumber,
                     config.jenkinsJobName,
                     config.deployUser,
-                    groovy.json.JsonOutput.toJson(config.metadata ?: [:])
+                    groovy.json.JsonOutput.toJson(config.metadata ?: [:]),
+                    config.buildUrl,  // Jenkins 构建 URL
+                    consoleUrl,       // Jenkins 控制台 URL
+                    config.status ?: 'IN_PROGRESS'
             ])
 
-            steps.echo "✅ 部署记录已保存到数据库: ${config.projectName} ${config.environment} ${config.version}"
+            steps.echo "✅ 部署元数据已保存到数据库"
 
         } catch (Exception e) {
             steps.echo "❌ 保存部署记录到数据库失败: ${e.message}"
-            // 不抛出异常，避免影响部署流程
+        } finally {
+            sql?.close()
+        }
+    }
+
+/**
+ * 更新部署状态和摘要信息
+ */
+    def updateDeploymentStatus(Map config) {
+        def sql = null
+        try {
+            sql = getConnection()
+
+            def updateSql = """
+            UPDATE deployment_records 
+            SET status = ?, error_summary = ?, deployment_duration = ?
+            WHERE project_name = ? AND environment = ? AND version = ?
+        """
+
+            sql.executeUpdate(updateSql, [
+                    config.status,
+                    config.errorSummary,
+                    config.deploymentDuration,
+                    config.projectName,
+                    config.environment,
+                    config.version
+            ])
+
+            steps.echo "✅ 部署状态更新完成: ${config.status}"
+
+        } catch (Exception e) {
+            steps.echo "❌ 更新部署状态失败: ${e.message}"
+        } finally {
+            sql?.close()
+        }
+    }
+
+/**
+ * 获取部署记录列表（用于查询）
+ */
+    def getDeploymentRecords(String projectName, String environment, int limit = 20) {
+        def sql = null
+        try {
+            sql = getConnection()
+
+            def query = """
+            SELECT 
+                id, project_name, environment, version, status,
+                deploy_time, jenkins_build_url, jenkins_console_url,
+                error_summary, deployment_duration, git_commit
+            FROM deployment_records
+            WHERE project_name = ? AND environment = ?
+            ORDER BY deploy_time DESC
+            LIMIT ?
+        """
+
+            def results = sql.rows(query, [projectName, environment, limit])
+            steps.echo "✅ 获取到 ${results.size()} 条部署记录"
+            return results
+
+        } catch (Exception e) {
+            steps.echo "❌ 获取部署记录失败: ${e.message}"
+            return []
         } finally {
             sql?.close()
         }
@@ -290,4 +293,6 @@ class DatabaseTools implements Serializable {
             sql?.close()
         }
     }
+
+
 }

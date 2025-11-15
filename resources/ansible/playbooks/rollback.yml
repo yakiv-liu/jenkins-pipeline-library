@@ -9,6 +9,7 @@
   tasks:
     - name: 验证回滚版本是否存在
       shell: |
+        echo "验证回滚版本是否存在: {{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
         docker inspect "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}" > /dev/null 2>/dev/null && echo "exists" || echo "none"
       register: image_check
       changed_when: false
@@ -16,12 +17,15 @@
     - name: 拉取回滚版本（如果本地不存在）
       when: image_check.stdout == "none"
       shell: |
+        echo "拉取回滚版本: {{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
         docker pull "{{ harbor_url }}/{{ app_name }}:{{ rollback_version }}"
+        echo "回滚版本拉取完成"
       args:
         executable: '/bin/bash'
 
     - name: 记录回滚操作
       shell: |
+        echo "记录回滚操作到备份目录"
         cat > "{{ backup_dir }}/{{ app_name }}-manual-rollback-$(date +%s).yml" << EOF
         rollback_time: "$(date -Iseconds)"
         rollback_version: "{{ rollback_version }}"
@@ -58,7 +62,9 @@
 
         - name: 验证回滚成功
           shell: |
+            echo "开始验证回滚是否成功..."
             for i in {1..10}; do
+              echo "回滚验证尝试 $i/10"
               if curl -f -s -o /dev/null -w "%{http_code}" "http://localhost:{{ app_port }}/hello" | grep -q "200"; then
                 echo "回滚成功"
                 exit 0
@@ -70,13 +76,47 @@
           register: rollback_test
           failed_when: rollback_test.rc != 0
 
+        - name: 记录回滚成功
+          debug:
+            msg: "回滚操作成功完成"
+
       rescue:
         - name: 回滚失败处理
           debug:
             msg: "回滚操作失败，请手动检查"
 
+        - name: 收集回滚失败信息
+          block:
+            - name: 检查容器状态
+              shell: |
+                echo "检查回滚后容器状态..."
+                docker ps -a --filter "name={{ app_name }}" || echo "容器不存在"
+              register: rollback_container_status
+              failed_when: false
+
+            - name: 显示容器状态
+              debug:
+                var: rollback_container_status.stdout
+
+            - name: 获取容器日志
+              shell: |
+                echo "获取回滚容器日志..."
+                docker logs "{{ app_name }}" --tail 50 || echo "无法获取日志"
+              register: rollback_container_logs
+              failed_when: false
+
+            - name: 显示容器日志
+              debug:
+                var: rollback_container_logs.stdout
+
+          rescue:
+            - name: 诊断信息收集失败
+              debug:
+                msg: "无法收集回滚失败的诊断信息"
+
         - name: 记录回滚失败
           shell: |
+            echo "记录回滚失败信息"
             cat > "{{ backup_dir }}/{{ app_name }}-rollback-failed-$(date +%s).yml" << EOF
             rollback_failed_time: "$(date -Iseconds)"
             rollback_version: "{{ rollback_version }}"

@@ -37,3 +37,8 @@ defaults:
   agent: "any"
   branch: "main"
   appPort: 8085
+  # === 新增：自动回滚配置 ===
+  autoRollback:
+    enabled: true
+    healthCheckTimeout: 30
+    maxRetries: 3

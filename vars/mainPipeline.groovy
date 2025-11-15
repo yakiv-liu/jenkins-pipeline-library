@@ -44,16 +44,14 @@ def call(Map userConfig = [:]) {
             stage('Initialize & Validation') {
                 steps {
                     script {
-                        // === 修改点：只测试数据库连接，不执行初始化 ===
+                        // === 修改点：数据库连接测试 ===
                         steps.echo "测试数据库连接..."
                         def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
                         def dbTestResult = deployTools.testDatabaseConnection()
 
                         if (!dbTestResult) {
                             steps.echo "❌ 数据库连接测试失败"
-                            // 可以选择继续执行或报错，根据您的需求决定
-                            // error "数据库连接失败，请检查数据库配置"
-                            steps.echo "⚠️ 数据库连接失败，但流水线将继续执行（部署记录将不会保存到数据库）"
+                            steps.echo "⚠️ 数据库连接失败，部署记录将不会保存到数据库"
                         } else {
                             steps.echo "✅ 数据库连接测试成功"
                         }
@@ -71,21 +69,23 @@ def call(Map userConfig = [:]) {
                         env.EMAIL_RECIPIENTS = config.defaultEmail
 
                         // === 修改点：回滚时验证版本（仅在数据库连接正常时）===
-                        if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION && dbTestResult) {
-                            steps.echo "验证回滚版本: ${env.ROLLBACK_VERSION}"
-                            def versionValid = deployTools.validateRollbackVersion(
-                                    env.PROJECT_NAME,
-                                    env.DEPLOY_ENV,
-                                    env.ROLLBACK_VERSION
-                            )
+                        if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION) {
+                            if (dbTestResult) {
+                                steps.echo "验证回滚版本: ${env.ROLLBACK_VERSION}"
+                                def versionValid = deployTools.validateRollbackVersion(
+                                        env.PROJECT_NAME,
+                                        env.DEPLOY_ENV,
+                                        env.ROLLBACK_VERSION
+                                )
 
-                            if (!versionValid) {
-                                error "回滚版本 ${env.ROLLBACK_VERSION} 不存在或无效，请检查版本号"
+                                if (!versionValid) {
+                                    error "回滚版本 ${env.ROLLBACK_VERSION} 不存在或无效，请检查版本号"
+                                }
+                            } else {
+                                steps.echo "⚠️ 数据库连接失败，跳过回滚版本验证"
+                                // 您可以选择在这里报错或继续执行
+                                // error "数据库连接失败，无法验证回滚版本"
                             }
-                        } else if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION && !dbTestResult) {
-                            steps.echo "⚠️ 数据库连接失败，跳过回滚版本验证"
-                            // 您可以选择在这里报错或继续执行
-                            // error "数据库连接失败，无法验证回滚版本"
                         }
 
                         // === 显示依赖检查配置 ===
@@ -126,11 +126,8 @@ def call(Map userConfig = [:]) {
             stage('Checkout & Setup') {
                 steps {
                     script {
-                        // ========== 修改点3：不再需要检出代码，因为Jenkinsfile在项目仓库中 ==========
+                        // ========== 修改点：不再需要检出代码，因为Jenkinsfile在项目仓库中 ==========
                         echo "✅ 代码已自动检出（Jenkinsfile在项目仓库中）"
-
-                        // 设置项目目录环境变量（已在environment块中设置）
-                        // env.PROJECT_DIR = "."
 
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                         writeJSON file: 'deployment-manifest.json', json: [
@@ -140,9 +137,9 @@ def call(Map userConfig = [:]) {
                                 git_commit: env.GIT_COMMIT,
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
-                                build_mode: env.BUILD_MODE,  // === 新增字段：构建模式 ===
-                                rollback_enabled: (env.BUILD_MODE != 'build-only'),  // === 修改点：在build-only模式下禁用回滚 ===
-                                database_enabled: true  // === 新增字段：数据库支持 ===
+                                build_mode: env.BUILD_MODE,
+                                rollback_enabled: (env.BUILD_MODE != 'build-only'),
+                                database_enabled: true
                         ]
 
                         // 验证目录结构
@@ -159,7 +156,6 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点4：移除原有的额外检出步骤，其他阶段保持不变 ==========
             stage('Build') {
                 when {
                     expression { !env.ROLLBACK.toBoolean() }
@@ -191,7 +187,6 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // === 修改点：将安全扫描拆分为独立阶段，并在build-only模式下跳过 ===
             stage('Security Scan') {
                 when {
                     allOf {
@@ -294,20 +289,32 @@ def call(Map userConfig = [:]) {
                             input message: "确认部署到${env.DEPLOY_ENV}环境?\n项目: ${env.PROJECT_NAME}\n版本: ${env.APP_VERSION}",
                                     ok: '确认部署',
                                     submitterParameter: 'APPROVER'
+
+                            steps.echo "👤 部署审批人: ${env.APPROVER}"
                         }
 
-                        // === 修改点：移除 Harbor 凭据包装，直接部署 ===
-                        deployTools.deployToEnvironment(
+                        // 记录部署配置
+                        steps.echo "📋 部署配置:"
+                        steps.echo "  - 项目: ${env.PROJECT_NAME}"
+                        steps.echo "  - 环境: ${env.DEPLOY_ENV}"
+                        steps.echo "  - 版本: ${env.APP_VERSION}"
+                        steps.echo "  - 分支: ${env.PROJECT_BRANCH}"
+                        steps.echo "  - Git Commit: ${env.GIT_COMMIT}"
+
+                        // === 修改点：使用带自动回滚的部署方法 ===
+                        def deployConfig = [
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
                                 version: env.APP_VERSION,
                                 harborUrl: env.HARBOR_URL,
                                 appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts
-                        )
+                                environmentHosts: config.environmentHosts,
+                                autoRollback: true  // 启用自动回滚
+                        ]
 
-                        // === 修改点5：移除文件记录，改为数据库记录 ===
-                        steps.echo "✅ 部署完成，记录已保存到数据库"
+                        deployTools.deployToEnvironmentWithAutoRollback(deployConfig)
+
+                        steps.echo "✅ 部署流程完成"
                     }
                 }
             }
@@ -323,44 +330,28 @@ def call(Map userConfig = [:]) {
                     script {
                         def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
 
-                        echo "执行回滚操作，项目: ${env.PROJECT_NAME}, 环境: ${env.DEPLOY_ENV}, 版本: ${env.ROLLBACK_VERSION}"
+                        steps.echo "🔄 开始执行回滚操作"
+                        steps.echo "  - 项目: ${env.PROJECT_NAME}"
+                        steps.echo "  - 环境: ${env.DEPLOY_ENV}"
+                        steps.echo "  - 回滚版本: ${env.ROLLBACK_VERSION}"
+                        steps.echo "  - 审批人: ${env.ROLLBACK_APPROVER ?: '手动触发'}"
 
-                        // === 修改点：移除 Harbor 凭据包装，直接回滚 ===
-                        deployTools.executeRollback(
+                        deployTools.executeRollback([
                                 projectName: env.PROJECT_NAME,
                                 environment: env.DEPLOY_ENV,
                                 version: env.ROLLBACK_VERSION,
                                 harborUrl: env.HARBOR_URL,
                                 appPort: configLoader.getAppPort(config),
                                 environmentHosts: config.environmentHosts
-                        )
+                        ])
 
-                        // === 修改点6：移除文件记录，改为数据库记录 ===
-                        steps.echo "✅ 回滚完成，记录已保存到数据库"
+                        steps.echo "✅ 回滚操作完成"
                     }
                 }
             }
 
-            stage('Post-Deployment Test') {
-                when {
-                    allOf {
-                        expression { !env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod' }
-                        expression { env.BUILD_MODE != 'build-only' }
-                    }
-                }
-                steps {
-                    script {
-                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
-                        deployTools.healthCheck(
-                                environment: env.DEPLOY_ENV,
-                                projectName: env.PROJECT_NAME,
-                                version: env.APP_VERSION,
-                                appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts
-                        )
-                    }
-                }
-            }
+            // === 修改点：移除独立的 Post-Deployment Validation 阶段 ===
+            // 健康检查已经在 Ansible playbook 中完成，不需要单独的阶段
         }
 
         post {
@@ -376,7 +367,7 @@ def call(Map userConfig = [:]) {
                     } else if (currentBuild.result == 'ABORTED') {
                         pipelineType = 'ABORTED'
                     } else if (env.BUILD_MODE == 'build-only') {
-                        pipelineType = 'BUILD_ONLY'  // === 新增流水线类型 ===
+                        pipelineType = 'BUILD_ONLY'
                     }
 
                     notificationTools.sendPipelineNotification(
@@ -390,6 +381,14 @@ def call(Map userConfig = [:]) {
                             pipelineType: pipelineType,
                             attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null)
                     )
+
+                    // === 修改点：添加部署历史查询 ===
+                    try {
+                        def queryTools = new org.yakiv.DeploymentQueryTools(steps, env, configLoader)
+                        queryTools.showDeploymentHistory(env.PROJECT_NAME, env.DEPLOY_ENV, 3)
+                    } catch (Exception e) {
+                        steps.echo "⚠️ 显示部署历史失败: ${e.message}"
+                    }
 
                     // === 修改点：添加备份文件到归档 ===
                     def artifactsToArchive = ['deployment-manifest.json']
