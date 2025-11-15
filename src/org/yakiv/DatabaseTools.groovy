@@ -134,6 +134,9 @@ class DatabaseTools implements Serializable {
     /**
      * 记录部署信息到数据库（修复GString类型问题）
      */
+    /**
+     * 记录部署信息到数据库（使用 UPSERT 操作）
+     */
     def recordDeployment(Map config) {
         def sql = null
         try {
@@ -143,60 +146,57 @@ class DatabaseTools implements Serializable {
                 return
             }
 
-            def insertSql = """
+            def upsertSql = """
             INSERT INTO deployment_records (
                 project_name, environment, version, git_commit, 
                 build_url, build_timestamp, jenkins_build_number,
                 jenkins_job_name, deploy_user, metadata,
                 jenkins_build_url, jenkins_console_url, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
-            """
+            ON CONFLICT (project_name, environment, version) 
+            DO UPDATE SET
+                git_commit = EXCLUDED.git_commit,
+                build_url = EXCLUDED.build_url,
+                build_timestamp = EXCLUDED.build_timestamp,
+                jenkins_build_number = EXCLUDED.jenkins_build_number,
+                jenkins_job_name = EXCLUDED.jenkins_job_name,
+                deploy_user = EXCLUDED.deploy_user,
+                metadata = EXCLUDED.metadata,
+                jenkins_build_url = EXCLUDED.jenkins_build_url,
+                jenkins_console_url = EXCLUDED.jenkins_console_url,
+                status = EXCLUDED.status,
+                update_time = CURRENT_TIMESTAMP
+        """
 
             def consoleUrl = "${config.buildUrl}console"
 
-            // 修复：显式转换所有参数为正确的类型
-            def params = [
-                    config.projectName?.toString(),                    // VARCHAR
-                    config.environment?.toString(),                    // VARCHAR
-                    config.version?.toString(),                        // VARCHAR
-                    config.gitCommit?.toString(),                      // VARCHAR
-                    config.buildUrl?.toString(),                       // VARCHAR
-                    new java.sql.Timestamp(config.buildTimestamp.getTime()), // TIMESTAMP
-                    config.jenkinsBuildNumber as Integer,              // INTEGER
-                    config.jenkinsJobName?.toString(),                 // VARCHAR
-                    config.deployUser?.toString(),                     // VARCHAR
-                    groovy.json.JsonOutput.toJson(config.metadata ?: [:]), // JSONB
-                    config.buildUrl?.toString(),                       // VARCHAR
-                    consoleUrl?.toString(),                            // VARCHAR
-                    (config.status ?: 'IN_PROGRESS')?.toString()       // VARCHAR
-            ]
+            // 使用显式参数设置
+            def stmt = sql.connection.prepareStatement(upsertSql)
 
-            // 使用带有显式类型的方法
-            def stmt = sql.connection.prepareStatement(insertSql)
-
-            // 手动设置每个参数的类型
-            stmt.setString(1, params[0])
-            stmt.setString(2, params[1])
-            stmt.setString(3, params[2])
-            stmt.setString(4, params[3])
-            stmt.setString(5, params[4])
-            stmt.setTimestamp(6, params[5])
-            stmt.setInt(7, params[6])
-            stmt.setString(8, params[7])
-            stmt.setString(9, params[8])
-            stmt.setObject(10, params[9], Types.OTHER)  // 对于 JSONB 使用 Types.OTHER
-            stmt.setString(11, params[10])
-            stmt.setString(12, params[11])
-            stmt.setString(13, params[12])
+            stmt.setString(1, config.projectName?.toString())
+            stmt.setString(2, config.environment?.toString())
+            stmt.setString(3, config.version?.toString())
+            stmt.setString(4, config.gitCommit?.toString())
+            stmt.setString(5, config.buildUrl?.toString())
+            stmt.setTimestamp(6, new java.sql.Timestamp(config.buildTimestamp.getTime()))
+            stmt.setInt(7, config.jenkinsBuildNumber as Integer)
+            stmt.setString(8, config.jenkinsJobName?.toString())
+            stmt.setString(9, config.deployUser?.toString())
+            stmt.setObject(10, groovy.json.JsonOutput.toJson(config.metadata ?: [:]), java.sql.Types.OTHER)
+            stmt.setString(11, config.buildUrl?.toString())
+            stmt.setString(12, consoleUrl?.toString())
+            stmt.setString(13, (config.status ?: 'IN_PROGRESS')?.toString())
 
             def result = stmt.executeUpdate()
             stmt.close()
 
-            steps.echo "✅ 部署元数据已保存到数据库，影响行数: ${result}"
+            if (result > 0) {
+                steps.echo "✅ 部署记录已保存或更新，影响行数: ${result}"
+            }
 
         } catch (Exception e) {
             steps.echo "❌ 保存部署记录失败: ${e.message}"
-            steps.echo "详细堆栈: ${e.stackTrace.join('\n')}"
+            steps.echo "详细堆栈: ${e.stackTrace.take(5).join('\n')}" // 只显示前5行堆栈跟踪
         } finally {
             sql?.close()
         }
