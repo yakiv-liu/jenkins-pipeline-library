@@ -2,6 +2,7 @@ package org.yakiv
 
 import groovy.sql.Sql
 import java.sql.DriverManager
+import java.sql.Types
 
 class DatabaseTools implements Serializable {
     def steps
@@ -131,7 +132,7 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 记录部署信息到数据库
+     * 记录部署信息到数据库（修复GString类型问题）
      */
     def recordDeployment(Map config) {
         def sql = null
@@ -149,37 +150,60 @@ class DatabaseTools implements Serializable {
                 jenkins_job_name, deploy_user, metadata,
                 jenkins_build_url, jenkins_console_url, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
-        """
+            """
 
             def consoleUrl = "${config.buildUrl}console"
 
-            sql.executeInsert(insertSql, [
-                    config.projectName,
-                    config.environment,
-                    config.version,
-                    config.gitCommit,
-                    config.buildUrl,
-                    new java.sql.Timestamp(config.buildTimestamp.getTime()),
-                    config.jenkinsBuildNumber,
-                    config.jenkinsJobName,
-                    config.deployUser,
-                    groovy.json.JsonOutput.toJson(config.metadata ?: [:]),
-                    config.buildUrl,
-                    consoleUrl,
-                    config.status ?: 'IN_PROGRESS'
-            ])
+            // 修复：显式转换所有参数为正确的类型
+            def params = [
+                    config.projectName?.toString(),                    // VARCHAR
+                    config.environment?.toString(),                    // VARCHAR
+                    config.version?.toString(),                        // VARCHAR
+                    config.gitCommit?.toString(),                      // VARCHAR
+                    config.buildUrl?.toString(),                       // VARCHAR
+                    new java.sql.Timestamp(config.buildTimestamp.getTime()), // TIMESTAMP
+                    config.jenkinsBuildNumber as Integer,              // INTEGER
+                    config.jenkinsJobName?.toString(),                 // VARCHAR
+                    config.deployUser?.toString(),                     // VARCHAR
+                    groovy.json.JsonOutput.toJson(config.metadata ?: [:]), // JSONB
+                    config.buildUrl?.toString(),                       // VARCHAR
+                    consoleUrl?.toString(),                            // VARCHAR
+                    (config.status ?: 'IN_PROGRESS')?.toString()       // VARCHAR
+            ]
 
-            steps.echo "✅ 部署元数据已保存到数据库"
+            // 使用带有显式类型的方法
+            def stmt = sql.connection.prepareStatement(insertSql)
+
+            // 手动设置每个参数的类型
+            stmt.setString(1, params[0])
+            stmt.setString(2, params[1])
+            stmt.setString(3, params[2])
+            stmt.setString(4, params[3])
+            stmt.setString(5, params[4])
+            stmt.setTimestamp(6, params[5])
+            stmt.setInt(7, params[6])
+            stmt.setString(8, params[7])
+            stmt.setString(9, params[8])
+            stmt.setObject(10, params[9], Types.OTHER)  // 对于 JSONB 使用 Types.OTHER
+            stmt.setString(11, params[10])
+            stmt.setString(12, params[11])
+            stmt.setString(13, params[12])
+
+            def result = stmt.executeUpdate()
+            stmt.close()
+
+            steps.echo "✅ 部署元数据已保存到数据库，影响行数: ${result}"
 
         } catch (Exception e) {
             steps.echo "❌ 保存部署记录失败: ${e.message}"
+            steps.echo "详细堆栈: ${e.stackTrace.join('\n')}"
         } finally {
             sql?.close()
         }
     }
 
     /**
-     * 更新部署状态和摘要信息
+     * 更新部署状态和摘要信息（修复类型问题）
      */
     def updateDeploymentStatus(Map config) {
         def sql = null
@@ -195,16 +219,20 @@ class DatabaseTools implements Serializable {
             SET status = ?, error_summary = ?, deployment_duration = ?,
                 update_time = CURRENT_TIMESTAMP
             WHERE project_name = ? AND environment = ? AND version = ?
-        """
+            """
 
-            int affectedRows = sql.executeUpdate(updateSql, [
-                    config.status,
-                    config.errorSummary,
-                    config.deploymentDuration,
-                    config.projectName,
-                    config.environment,
-                    config.version
-            ])
+            // 使用带有显式类型的方法
+            def stmt = sql.connection.prepareStatement(updateSql)
+
+            stmt.setString(1, config.status?.toString())
+            stmt.setString(2, config.errorSummary?.toString())
+            stmt.setObject(3, config.deploymentDuration) // 可能是整数或浮点数
+            stmt.setString(4, config.projectName?.toString())
+            stmt.setString(5, config.environment?.toString())
+            stmt.setString(6, config.version?.toString())
+
+            int affectedRows = stmt.executeUpdate()
+            stmt.close()
 
             if (affectedRows > 0) {
                 steps.echo "✅ 部署状态更新完成: ${config.status} (影响行数: ${affectedRows})"
@@ -279,9 +307,36 @@ class DatabaseTools implements Serializable {
             WHERE project_name = ? AND environment = ?
             ORDER BY deploy_time DESC
             LIMIT ?
-        """
+            """
 
-            def results = sql.rows(query, [projectName, environment, limit])
+            // 使用显式参数设置
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, environment?.toString())
+            stmt.setInt(3, limit)
+
+            def rs = stmt.executeQuery()
+            def results = []
+
+            while (rs.next()) {
+                results.add([
+                        id: rs.getLong("id"),
+                        project_name: rs.getString("project_name"),
+                        environment: rs.getString("environment"),
+                        version: rs.getString("version"),
+                        status: rs.getString("status"),
+                        deploy_time: rs.getTimestamp("deploy_time"),
+                        jenkins_build_url: rs.getString("jenkins_build_url"),
+                        jenkins_console_url: rs.getString("jenkins_console_url"),
+                        error_summary: rs.getString("error_summary"),
+                        deployment_duration: rs.getObject("deployment_duration"),
+                        git_commit: rs.getString("git_commit")
+                ])
+            }
+
+            rs.close()
+            stmt.close()
+
             steps.echo "✅ 获取到 ${results.size()} 条部署记录"
             return results
 
@@ -297,7 +352,7 @@ class DatabaseTools implements Serializable {
         }
     }
 
-    // 其他方法保持不变...
+    // 其他方法也需要类似的修复...
     def recordRollback(Map config) {
         def sql = null
         try {
@@ -315,18 +370,22 @@ class DatabaseTools implements Serializable {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """
 
-            sql.executeInsert(insertSql, [
-                    config.projectName,
-                    config.environment,
-                    config.rollbackVersion,
-                    config.currentVersion,
-                    config.buildUrl,
-                    config.jenkinsBuildNumber,
-                    config.jenkinsJobName,
-                    config.rollbackUser,
-                    config.reason,
-                    config.status
-            ])
+            // 使用显式参数设置
+            def stmt = sql.connection.prepareStatement(insertSql)
+
+            stmt.setString(1, config.projectName?.toString())
+            stmt.setString(2, config.environment?.toString())
+            stmt.setString(3, config.rollbackVersion?.toString())
+            stmt.setString(4, config.currentVersion?.toString())
+            stmt.setString(5, config.buildUrl?.toString())
+            stmt.setInt(6, config.jenkinsBuildNumber as Integer)
+            stmt.setString(7, config.jenkinsJobName?.toString())
+            stmt.setString(8, config.rollbackUser?.toString())
+            stmt.setString(9, config.reason?.toString())
+            stmt.setString(10, (config.status ?: 'SUCCESS')?.toString())
+
+            def result = stmt.executeUpdate()
+            stmt.close()
 
             steps.echo "✅ 回滚记录已保存到数据库: ${config.projectName} ${config.environment} ${config.rollbackVersion}"
 
@@ -341,6 +400,7 @@ class DatabaseTools implements Serializable {
         }
     }
 
+    // 其他方法也需要类似的修复...
     def getRollbackVersions(String projectName, String environment, int limit = 10) {
         def sql = null
         try {
@@ -358,7 +418,26 @@ class DatabaseTools implements Serializable {
                 LIMIT ?
             """
 
-            def results = sql.rows(query, [projectName, environment, limit])
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, environment?.toString())
+            stmt.setInt(3, limit)
+
+            def rs = stmt.executeQuery()
+            def results = []
+
+            while (rs.next()) {
+                results.add([
+                        version: rs.getString("version"),
+                        deploy_time: rs.getTimestamp("deploy_time"),
+                        git_commit: rs.getString("git_commit"),
+                        build_url: rs.getString("build_url")
+                ])
+            }
+
+            rs.close()
+            stmt.close()
+
             steps.echo "✅ 从数据库获取到 ${results.size()} 个可回滚版本"
             return results
 
@@ -374,6 +453,7 @@ class DatabaseTools implements Serializable {
         }
     }
 
+    // 其他方法也需要类似的修复...
     def validateRollbackVersion(String projectName, String environment, String version) {
         def sql = null
         try {
@@ -389,8 +469,20 @@ class DatabaseTools implements Serializable {
                 WHERE project_name = ? AND environment = ? AND version = ? AND status = 'SUCCESS'
             """
 
-            def result = sql.firstRow(query, [projectName, environment, version])
-            def exists = result.count > 0
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, environment?.toString())
+            stmt.setString(3, version?.toString())
+
+            def rs = stmt.executeQuery()
+            def exists = false
+
+            if (rs.next()) {
+                exists = rs.getLong("count") > 0
+            }
+
+            rs.close()
+            stmt.close()
 
             if (exists) {
                 steps.echo "✅ 回滚版本验证通过: ${version}"
@@ -429,8 +521,21 @@ class DatabaseTools implements Serializable {
                 LIMIT 1
             """
 
-            def result = sql.firstRow(query, [projectName, environment])
-            return result?.version
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, environment?.toString())
+
+            def rs = stmt.executeQuery()
+            def version = null
+
+            if (rs.next()) {
+                version = rs.getString("version")
+            }
+
+            rs.close()
+            stmt.close()
+
+            return version
 
         } catch (Exception e) {
             steps.echo "❌ 获取最新版本失败: ${e.message}"
