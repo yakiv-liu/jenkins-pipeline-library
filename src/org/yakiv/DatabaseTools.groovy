@@ -1,6 +1,7 @@
 package org.yakiv
 
 import groovy.sql.Sql
+import java.sql.DriverManager
 
 class DatabaseTools implements Serializable {
     def steps
@@ -14,7 +15,7 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 获取数据库连接
+     * 获取数据库连接（双重保险方案）
      */
     def getConnection() {
         try {
@@ -26,9 +27,8 @@ class DatabaseTools implements Serializable {
             steps.echo "连接数据库: ${dbUrl.replace(dbPassword, '***')}"
             steps.echo "使用驱动: ${dbDriver}"
 
-            // === 修复点：显式加载驱动 ===
+            // 确保驱动类已加载
             try {
-                // 尝试显式加载驱动类
                 Class.forName(dbDriver)
                 steps.echo "✅ PostgreSQL 驱动类加载成功"
             } catch (ClassNotFoundException e) {
@@ -37,15 +37,31 @@ class DatabaseTools implements Serializable {
                 return null
             }
 
-            // === 修复点：使用 DriverManager 而不是 Sql.newInstance ===
+            // 双重保险连接方案
+            def connection = null
+
+            // 方案1: 首先尝试 DriverManager（标准方式）
             try {
-                def connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
-                steps.echo "✅ 数据库连接建立成功"
-                return new Sql(connection)
+                connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
+                steps.echo "✅ 通过 DriverManager 连接成功"
             } catch (Exception e) {
-                steps.echo "❌ 数据库连接失败: ${e.message}"
-                return null
+                steps.echo "⚠️ DriverManager 连接失败，使用备选方案: ${e.message}"
+
+                // 方案2: 直接使用驱动实例（备选方案）
+                try {
+                    def driver = Class.forName(dbDriver).newInstance()
+                    def props = new Properties()
+                    props.setProperty("user", dbUser)
+                    props.setProperty("password", dbPassword)
+                    connection = driver.connect(dbUrl, props)
+                    steps.echo "✅ 通过驱动实例连接成功"
+                } catch (Exception e2) {
+                    steps.echo "❌ 所有连接方案都失败: ${e2.message}"
+                    return null
+                }
             }
+
+            return new Sql(connection)
 
         } catch (Exception e) {
             steps.echo "❌ 数据库连接失败: ${e.message}"
@@ -54,16 +70,16 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 记录部署信息到数据库
+     * 记录部署信息到数据库（简化版）
      */
-    // 简化部署记录方法，只记录元数据
-/**
- * 记录部署信息到数据库（简化版）
- */
     def recordDeployment(Map config) {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过记录部署信息"
+                return
+            }
 
             def insertSql = """
             INSERT INTO deployment_records (
@@ -97,26 +113,37 @@ class DatabaseTools implements Serializable {
 
         } catch (Exception e) {
             steps.echo "❌ 保存部署记录到数据库失败: ${e.message}"
+            // 记录详细错误信息以便调试
+            steps.echo "详细错误: ${e.getStackTrace().find { it.contains('DatabaseTools') }}"
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
-/**
- * 更新部署状态和摘要信息
- */
+    /**
+     * 更新部署状态和摘要信息
+     */
     def updateDeploymentStatus(Map config) {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过更新部署状态"
+                return
+            }
 
             def updateSql = """
             UPDATE deployment_records 
-            SET status = ?, error_summary = ?, deployment_duration = ?
+            SET status = ?, error_summary = ?, deployment_duration = ?,
+                update_time = CURRENT_TIMESTAMP
             WHERE project_name = ? AND environment = ? AND version = ?
         """
 
-            sql.executeUpdate(updateSql, [
+            int affectedRows = sql.executeUpdate(updateSql, [
                     config.status,
                     config.errorSummary,
                     config.deploymentDuration,
@@ -125,22 +152,34 @@ class DatabaseTools implements Serializable {
                     config.version
             ])
 
-            steps.echo "✅ 部署状态更新完成: ${config.status}"
+            if (affectedRows > 0) {
+                steps.echo "✅ 部署状态更新完成: ${config.status} (影响行数: ${affectedRows})"
+            } else {
+                steps.echo "⚠️ 未找到匹配的部署记录来更新状态"
+            }
 
         } catch (Exception e) {
             steps.echo "❌ 更新部署状态失败: ${e.message}"
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
-/**
- * 获取部署记录列表（用于查询）
- */
+    /**
+     * 获取部署记录列表（用于查询）
+     */
     def getDeploymentRecords(String projectName, String environment, int limit = 20) {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过查询部署记录"
+                return []
+            }
 
             def query = """
             SELECT 
@@ -161,7 +200,11 @@ class DatabaseTools implements Serializable {
             steps.echo "❌ 获取部署记录失败: ${e.message}"
             return []
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
@@ -172,13 +215,17 @@ class DatabaseTools implements Serializable {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过记录回滚信息"
+                return
+            }
 
             def insertSql = """
                 INSERT INTO rollback_records (
                     project_name, environment, rollback_version, current_version,
                     build_url, jenkins_build_number, jenkins_job_name,
-                    rollback_user, reason, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    rollback_user, reason, status, rollback_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """
 
             sql.executeInsert(insertSql, [
@@ -200,7 +247,11 @@ class DatabaseTools implements Serializable {
             steps.echo "❌ 保存回滚记录到数据库失败: ${e.message}"
             // 不抛出异常，避免影响回滚流程
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
@@ -211,6 +262,10 @@ class DatabaseTools implements Serializable {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过获取回滚版本"
+                return []
+            }
 
             def query = """
                 SELECT version, deploy_time, git_commit, build_url
@@ -228,7 +283,11 @@ class DatabaseTools implements Serializable {
             steps.echo "❌ 从数据库获取回滚版本失败: ${e.message}"
             return []
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
@@ -239,6 +298,10 @@ class DatabaseTools implements Serializable {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过验证回滚版本"
+                return false
+            }
 
             def query = """
                 SELECT COUNT(*) as count
@@ -261,7 +324,11 @@ class DatabaseTools implements Serializable {
             steps.echo "❌ 验证回滚版本失败: ${e.message}"
             return false
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
@@ -272,6 +339,10 @@ class DatabaseTools implements Serializable {
         def sql = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过获取最新版本"
+                return null
+            }
 
             def query = """
                 SELECT version
@@ -288,7 +359,11 @@ class DatabaseTools implements Serializable {
             steps.echo "❌ 获取最新版本失败: ${e.message}"
             return null
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
@@ -305,16 +380,62 @@ class DatabaseTools implements Serializable {
             }
 
             def result = sql.firstRow("SELECT 1 as test")
-            steps.echo "✅ 数据库连接测试成功"
-            return true
+            def success = result?.test == 1
+
+            if (success) {
+                steps.echo "✅ 数据库连接测试成功"
+            } else {
+                steps.echo "❌ 数据库连接测试失败：查询返回异常结果"
+            }
+            return success
 
         } catch (Exception e) {
             steps.echo "❌ 数据库连接测试失败: ${e.message}"
             return false
         } finally {
-            sql?.close()
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
         }
     }
 
+    /**
+     * 测试数据库详细连接信息
+     */
+    def testDetailedConnection() {
+        def sql = null
+        try {
+            sql = getConnection()
+            if (!sql) {
+                return false
+            }
 
+            // 执行更详细的测试查询
+            def dbInfo = sql.firstRow("""
+                SELECT 
+                    current_database() as database,
+                    current_user as user,
+                    version() as version
+            """)
+
+            steps.echo "✅ 数据库连接详细信息:"
+            steps.echo "   - 数据库: ${dbInfo.database}"
+            steps.echo "   - 用户: ${dbInfo.user}"
+            steps.echo "   - PostgreSQL 版本: ${dbInfo.version.split(',')[0]}"
+
+            return true
+
+        } catch (Exception e) {
+            steps.echo "❌ 详细连接测试失败: ${e.message}"
+            return false
+        } finally {
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
+        }
+    }
 }
