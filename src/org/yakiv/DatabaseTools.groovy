@@ -15,7 +15,7 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 获取数据库连接（双重保险方案）
+     * 获取数据库连接（使用已知驱动路径）
      */
     def getConnection() {
         try {
@@ -27,40 +27,21 @@ class DatabaseTools implements Serializable {
             steps.echo "连接数据库: ${dbUrl.replace(dbPassword, '***')}"
             steps.echo "使用驱动: ${dbDriver}"
 
-            // 确保驱动类已加载
-            try {
-                Class.forName(dbDriver)
-                steps.echo "✅ PostgreSQL 驱动类加载成功"
-            } catch (ClassNotFoundException e) {
-                steps.echo "❌ 无法加载 PostgreSQL 驱动类: ${e.message}"
-                steps.echo "💡 请确保 PostgreSQL JDBC 驱动在 Jenkins 类路径中"
+            // 使用已知路径加载驱动
+            def driverInstance = loadDriverFromKnownPath(dbDriver)
+            if (!driverInstance) {
+                steps.echo "❌ 无法加载数据库驱动"
                 return null
             }
 
-            // 双重保险连接方案
-            def connection = null
-
-            // 方案1: 首先尝试 DriverManager（标准方式）
-            try {
-                connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
-                steps.echo "✅ 通过 DriverManager 连接成功"
-            } catch (Exception e) {
-                steps.echo "⚠️ DriverManager 连接失败，使用备选方案: ${e.message}"
-
-                // 方案2: 直接使用驱动实例（备选方案）
-                try {
-                    def driver = Class.forName(dbDriver).newInstance()
-                    def props = new Properties()
-                    props.setProperty("user", dbUser)
-                    props.setProperty("password", dbPassword)
-                    connection = driver.connect(dbUrl, props)
-                    steps.echo "✅ 通过驱动实例连接成功"
-                } catch (Exception e2) {
-                    steps.echo "❌ 所有连接方案都失败: ${e2.message}"
-                    return null
-                }
+            // 建立连接
+            def connection = establishConnectionWithDriver(driverInstance, dbUrl, dbUser, dbPassword)
+            if (!connection) {
+                steps.echo "❌ 无法建立数据库连接"
+                return null
             }
 
+            steps.echo "✅ 数据库连接建立成功"
             return new Sql(connection)
 
         } catch (Exception e) {
@@ -70,14 +51,94 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 记录部署信息到数据库（简化版）
+     * 从已知路径加载驱动
+     */
+    private def loadDriverFromKnownPath(String driverClassName) {
+        try {
+            // 首先尝试直接加载（如果已经加载过）
+            steps.echo "尝试直接加载驱动: ${driverClassName}"
+            return Class.forName(driverClassName).newInstance()
+        } catch (ClassNotFoundException e) {
+            steps.echo "驱动类未找到，从已知路径加载..."
+
+            // 使用已知路径加载驱动
+            def driverPath = "/tmp/jenkins-libs/postgresql.jar"
+
+            // 检查文件是否存在
+            def fileExists = steps.sh(
+                    script: "if [ -f \"${driverPath}\" ]; then echo \"EXISTS\"; else echo \"NOT_EXISTS\"; fi",
+                    returnStdout: true
+            ).trim() == "EXISTS"
+
+            if (!fileExists) {
+                steps.echo "❌ 驱动文件不存在: ${driverPath}"
+                steps.echo "💡 请确保已手动下载驱动到该路径"
+                return null
+            }
+
+            try {
+                // 使用URLClassLoader动态加载
+                def driverFile = new File(driverPath)
+                def urlClassLoader = new URLClassLoader(
+                        [driverFile.toURI().toURL()] as URL[],
+                        this.class.classLoader
+                )
+
+                steps.echo "✅ 从已知路径加载驱动成功: ${driverPath}"
+                return urlClassLoader.loadClass(driverClassName).newInstance()
+
+            } catch (Exception ex) {
+                steps.echo "❌ 从已知路径加载驱动失败: ${ex.message}"
+                return null
+            }
+        } catch (Exception e) {
+            steps.echo "❌ 驱动加载失败: ${e.message}"
+            return null
+        }
+    }
+
+    /**
+     * 使用驱动实例建立连接
+     */
+    private def establishConnectionWithDriver(driverInstance, String url, String user, String password) {
+        try {
+            steps.echo "通过驱动实例建立连接..."
+            def props = new Properties()
+            props.setProperty("user", user)
+            props.setProperty("password", password)
+
+            def connection = driverInstance.connect(url, props)
+            if (connection != null) {
+                steps.echo "✅ 通过驱动实例连接成功"
+                return connection
+            }
+        } catch (Exception e) {
+            steps.echo "❌ 驱动实例连接失败: ${e.message}"
+        }
+
+        // 备选方案：尝试注册到DriverManager
+        try {
+            steps.echo "尝试注册驱动到DriverManager..."
+            DriverManager.registerDriver(driverInstance)
+            def connection = DriverManager.getConnection(url, user, password)
+            steps.echo "✅ 通过DriverManager连接成功"
+            return connection
+        } catch (Exception e) {
+            steps.echo "❌ DriverManager连接失败: ${e.message}"
+        }
+
+        return null
+    }
+
+    /**
+     * 记录部署信息到数据库
      */
     def recordDeployment(Map config) {
         def sql = null
         try {
             sql = getConnection()
             if (!sql) {
-                steps.echo "❌ 无法获取数据库连接，跳过记录部署信息"
+                steps.echo "⚠️ 数据库连接不可用，跳过记录部署信息"
                 return
             }
 
@@ -90,7 +151,6 @@ class DatabaseTools implements Serializable {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
         """
 
-            // 构建 Jenkins 控制台 URL
             def consoleUrl = "${config.buildUrl}console"
 
             sql.executeInsert(insertSql, [
@@ -104,23 +164,17 @@ class DatabaseTools implements Serializable {
                     config.jenkinsJobName,
                     config.deployUser,
                     groovy.json.JsonOutput.toJson(config.metadata ?: [:]),
-                    config.buildUrl,  // Jenkins 构建 URL
-                    consoleUrl,       // Jenkins 控制台 URL
+                    config.buildUrl,
+                    consoleUrl,
                     config.status ?: 'IN_PROGRESS'
             ])
 
             steps.echo "✅ 部署元数据已保存到数据库"
 
         } catch (Exception e) {
-            steps.echo "❌ 保存部署记录到数据库失败: ${e.message}"
-            // 记录详细错误信息以便调试
-            steps.echo "详细错误: ${e.getStackTrace().find { it.contains('DatabaseTools') }}"
+            steps.echo "❌ 保存部署记录失败: ${e.message}"
         } finally {
-            try {
-                sql?.close()
-            } catch (Exception e) {
-                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
-            }
+            sql?.close()
         }
     }
 
@@ -170,7 +224,42 @@ class DatabaseTools implements Serializable {
     }
 
     /**
-     * 获取部署记录列表（用于查询）
+     * 测试数据库连接
+     */
+    def testConnection() {
+        def sql = null
+        try {
+            sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 数据库连接不可用"
+                return false
+            }
+
+            // 简单的测试查询
+            def result = sql.firstRow("SELECT 1 as test_value")
+            def success = result?.test_value == 1
+
+            if (success) {
+                steps.echo "✅ 数据库连接测试成功"
+            } else {
+                steps.echo "❌ 数据库连接测试失败：查询返回异常结果"
+            }
+            return success
+
+        } catch (Exception e) {
+            steps.echo "❌ 数据库连接测试失败: ${e.message}"
+            return false
+        } finally {
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * 获取部署记录列表
      */
     def getDeploymentRecords(String projectName, String environment, int limit = 20) {
         def sql = null
@@ -208,9 +297,7 @@ class DatabaseTools implements Serializable {
         }
     }
 
-    /**
-     * 记录回滚信息到数据库
-     */
+    // 其他方法保持不变...
     def recordRollback(Map config) {
         def sql = null
         try {
@@ -245,7 +332,6 @@ class DatabaseTools implements Serializable {
 
         } catch (Exception e) {
             steps.echo "❌ 保存回滚记录到数据库失败: ${e.message}"
-            // 不抛出异常，避免影响回滚流程
         } finally {
             try {
                 sql?.close()
@@ -255,9 +341,6 @@ class DatabaseTools implements Serializable {
         }
     }
 
-    /**
-     * 获取可回滚的版本列表
-     */
     def getRollbackVersions(String projectName, String environment, int limit = 10) {
         def sql = null
         try {
@@ -291,9 +374,6 @@ class DatabaseTools implements Serializable {
         }
     }
 
-    /**
-     * 验证回滚版本是否存在
-     */
     def validateRollbackVersion(String projectName, String environment, String version) {
         def sql = null
         try {
@@ -332,9 +412,6 @@ class DatabaseTools implements Serializable {
         }
     }
 
-    /**
-     * 获取最新的部署版本
-     */
     def getLatestVersion(String projectName, String environment) {
         def sql = null
         try {
@@ -358,78 +435,6 @@ class DatabaseTools implements Serializable {
         } catch (Exception e) {
             steps.echo "❌ 获取最新版本失败: ${e.message}"
             return null
-        } finally {
-            try {
-                sql?.close()
-            } catch (Exception e) {
-                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
-            }
-        }
-    }
-
-    /**
-     * 测试数据库连接
-     */
-    def testConnection() {
-        def sql = null
-        try {
-            sql = getConnection()
-            if (sql == null) {
-                steps.echo "❌ 数据库连接不可用"
-                return false
-            }
-
-            def result = sql.firstRow("SELECT 1 as test")
-            def success = result?.test == 1
-
-            if (success) {
-                steps.echo "✅ 数据库连接测试成功"
-            } else {
-                steps.echo "❌ 数据库连接测试失败：查询返回异常结果"
-            }
-            return success
-
-        } catch (Exception e) {
-            steps.echo "❌ 数据库连接测试失败: ${e.message}"
-            return false
-        } finally {
-            try {
-                sql?.close()
-            } catch (Exception e) {
-                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
-            }
-        }
-    }
-
-    /**
-     * 测试数据库详细连接信息
-     */
-    def testDetailedConnection() {
-        def sql = null
-        try {
-            sql = getConnection()
-            if (!sql) {
-                return false
-            }
-
-            // 执行更详细的测试查询
-            def dbInfo = sql.firstRow("""
-                SELECT 
-                    current_database() as database,
-                    current_user as user,
-                    version() as version
-            """)
-
-            steps.echo "✅ 数据库连接详细信息:"
-            steps.echo "   - 数据库: ${dbInfo.database}"
-            steps.echo "   - 用户: ${dbInfo.user}"
-            steps.echo "   - PostgreSQL 版本: ${dbInfo.version.split(',')[0]}"
-
-            return true
-
-        } catch (Exception e) {
-            steps.echo "❌ 详细连接测试失败: ${e.message}"
-            return false
         } finally {
             try {
                 sql?.close()
