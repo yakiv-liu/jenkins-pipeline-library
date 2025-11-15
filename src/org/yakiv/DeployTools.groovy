@@ -163,7 +163,7 @@ class DeployTools implements Serializable {
             steps.echo "✅ 部署成功完成 - 耗时: ${duration}秒"
 
             // 更新数据库状态
-            updateDeploymentStatus(config, 'SUCCESS', null, duration)
+            updateDeploymentStatus(config, 'SUCCESS', null, duration as Long)
 
             return true
 
@@ -184,7 +184,7 @@ class DeployTools implements Serializable {
             }
 
             // 更新数据库状态
-            updateDeploymentStatus(config, 'FAILED', deployError.message, duration)
+            updateDeploymentStatus(config, 'FAILED', deployError.message, duration as Long)
 
             // 自动回滚逻辑
             def autoRollbackEnabled = config.autoRollback != false
@@ -360,13 +360,17 @@ class DeployTools implements Serializable {
         }
 
         try {
+            // === 修复点：处理 null 值和类型转换 ===
+            def safeErrorSummary = errorSummary ?: ""
+            def safeDuration = duration != null ? duration.longValue() : 0L
+
             dbTools.updateDeploymentStatus([
                     projectName: config.projectName,
                     environment: config.environment,
                     version: config.version,
                     status: status,
-                    errorSummary: errorSummary,
-                    deploymentDuration: duration
+                    errorSummary: safeErrorSummary,
+                    deploymentDuration: safeDuration
             ])
 
             steps.echo "📊 部署状态已更新: ${status}"

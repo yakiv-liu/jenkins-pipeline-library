@@ -280,17 +280,18 @@ class DatabaseTools implements Serializable {
      * 测试数据库连接
      */
     def testConnection() {
-        def sql = null
         try {
-            sql = getConnection()
+            def sql = getConnection()
+            if (sql == null) {
+                steps.echo "❌ 数据库连接不可用（驱动未安装）"
+                return false
+            }
             def result = sql.firstRow("SELECT 1 as test")
             steps.echo "✅ 数据库连接测试成功"
             return true
         } catch (Exception e) {
             steps.echo "❌ 数据库连接测试失败: ${e.message}"
             return false
-        } finally {
-            sql?.close()
         }
     }
 
