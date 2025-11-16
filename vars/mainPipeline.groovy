@@ -29,9 +29,10 @@ def call(Map userConfig = [:]) {
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
             APP_VERSION = "${BUILD_TIMESTAMP}"
+            // ========== 修改点2：在共享库中获取GIT_COMMIT ==========
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-            // ========== 修改点2：项目目录改为当前目录 ==========
-            PROJECT_DIR = "."
+            // ========== 修改点3：项目目录改为项目名称对应的目录 ==========
+            PROJECT_DIR = "${config.projectName}"
 
             // === 新增环境变量：跳过依赖检查标志 ===
             SKIP_DEPENDENCY_CHECK = "${config.skipDependencyCheck ?: true}"
@@ -41,6 +42,47 @@ def call(Map userConfig = [:]) {
         }
 
         stages {
+            // ========== 修改点4：新增Checkout阶段 ==========
+            stage('Checkout Project Code') {
+                steps {
+                    script {
+                        echo "📥 开始检出项目代码..."
+                        echo "仓库地址: ${config.projectRepoUrl}"
+                        echo "目标分支: ${config.projectBranch}"
+
+                        // 检出指定的项目代码仓库和分支
+                        checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: "*/${config.projectBranch}"]],
+                                userRemoteConfigs: [[
+                                                            url: config.projectRepoUrl,
+                                                            credentialsId: 'github-ssh-key-slave' // 根据你的实际情况修改凭据ID
+                                                    ]],
+                                extensions: [
+                                        // 清理工作空间
+                                        [$class: 'CleanCheckout'],
+                                        // ========== 修改点5：设置相对目标目录为项目名称 ==========
+                                        [$class: 'RelativeTargetDirectory', relativeTargetDir: "${config.projectName}"]
+                                ]
+                        ])
+
+                        // 验证代码检出结果
+                        sh """
+                            echo "=== 代码检出完成 ==="
+                            echo "当前工作目录: \$(pwd)"
+                            echo "=== 目录结构 ==="
+                            ls -la
+                            echo "=== 项目目录结构 ==="
+                            ls -la ${config.projectName}/
+                            echo "=== Git 信息 ==="
+                            cd ${config.projectName} && git branch -a && git log -1 --oneline
+                        """
+
+                        echo "✅ 项目代码检出完成"
+                    }
+                }
+            }
+
             stage('Initialize & Validation') {
                 steps {
                     script {
@@ -117,20 +159,22 @@ def call(Map userConfig = [:]) {
                         echo "版本: ${env.APP_VERSION}"
                         echo "项目仓库: ${env.PROJECT_REPO_URL}"
                         echo "项目分支: ${env.PROJECT_BRANCH}"
+                        echo "项目目录: ${env.PROJECT_DIR}"
+                        echo "Git Commit: ${env.GIT_COMMIT}"
                         echo "端口: ${configLoader.getAppPort(config)}"
                         echo "目标主机: ${configLoader.getEnvironmentHost(config, env.DEPLOY_ENV)}"
                     }
                 }
             }
 
-            stage('Checkout & Setup') {
+            // ========== 修改点6：重命名并简化原来的Checkout & Setup阶段 ==========
+            stage('Project Setup') {
                 steps {
                     script {
-                        // ========== 修改点：不再需要检出代码，因为Jenkinsfile在项目仓库中 ==========
-                        echo "✅ 代码已自动检出（Jenkinsfile在项目仓库中）"
+                        echo "✅ 项目代码已在前置阶段检出"
 
                         def buildTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-                        writeJSON file: 'deployment-manifest.json', json: [
+                        writeJSON file: "${env.PROJECT_DIR}/deployment-manifest.json", json: [
                                 project: env.PROJECT_NAME,
                                 version: env.APP_VERSION,
                                 environment: env.DEPLOY_ENV,
@@ -147,10 +191,14 @@ def call(Map userConfig = [:]) {
                             echo "=== 工作空间结构 ==="
                             echo "当前目录: \$(pwd)"
                             ls -la
+                            echo "=== 项目目录结构 ==="
+                            ls -la ${env.PROJECT_DIR}/
                             echo "=== 检查 pom.xml ==="
-                            ls -la pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
+                            ls -la ${env.PROJECT_DIR}/pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
                             echo "=== 检查分支信息 ==="
-                            git branch -a && echo "当前分支:" && git branch --show-current
+                            cd ${env.PROJECT_DIR} && git branch -a && echo "当前分支:" && git branch --show-current
+                            echo "=== 检查Git提交 ==="
+                            cd ${env.PROJECT_DIR} && git log -1 --oneline
                         """
                     }
                 }
@@ -163,15 +211,18 @@ def call(Map userConfig = [:]) {
                 steps {
                     script {
                         def buildTools = new org.yakiv.BuildTools(steps, env)
-                        buildTools.mavenBuild(
-                                version: env.APP_VERSION
-                        )
+                        // ========== 修改点7：在项目目录下执行构建 ==========
+                        dir(env.PROJECT_DIR) {
+                            buildTools.mavenBuild(
+                                    version: env.APP_VERSION
+                            )
 
-                        buildTools.buildDockerImage(
-                                projectName: env.PROJECT_NAME,
-                                version: env.APP_VERSION,
-                                gitCommit: env.GIT_COMMIT
-                        )
+                            buildTools.buildDockerImage(
+                                    projectName: env.PROJECT_NAME,
+                                    version: env.APP_VERSION,
+                                    gitCommit: env.GIT_COMMIT
+                            )
+                        }
 
                         // === 修改点：在build-only模式下跳过镜像推送 ===
                         if (env.BUILD_MODE != 'build-only') {
@@ -209,11 +260,14 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                securityTools.fastSonarScan(
-                                        projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
-                                        projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
-                                        branch: "${env.PROJECT_BRANCH}"
-                                )
+                                // ========== 修改点8：在项目目录下执行Sonar扫描 ==========
+                                dir(env.PROJECT_DIR) {
+                                    securityTools.fastSonarScan(
+                                            projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
+                                            projectName: "${env.PROJECT_NAME} ${env.APP_VERSION}",
+                                            branch: "${env.PROJECT_BRANCH}"
+                                    )
+                                }
                             }
                         }
                     }
@@ -224,7 +278,10 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                securityTools.fastDependencyCheck()
+                                // ========== 修改点9：在项目目录下执行依赖检查 ==========
+                                dir(env.PROJECT_DIR) {
+                                    securityTools.fastDependencyCheck()
+                                }
                             }
                         }
                     }
@@ -299,6 +356,7 @@ def call(Map userConfig = [:]) {
                         steps.echo "  - 环境: ${env.DEPLOY_ENV}"
                         steps.echo "  - 版本: ${env.APP_VERSION}"
                         steps.echo "  - 分支: ${env.PROJECT_BRANCH}"
+                        steps.echo "  - 项目目录: ${env.PROJECT_DIR}"
                         steps.echo "  - Git Commit: ${env.GIT_COMMIT}"
 
                         // === 修改点：使用带自动回滚的部署方法 ===
@@ -391,7 +449,7 @@ def call(Map userConfig = [:]) {
                     }
 
                     // === 修改点：添加备份文件到归档 ===
-                    def artifactsToArchive = ['deployment-manifest.json']
+                    def artifactsToArchive = ["${env.PROJECT_DIR}/deployment-manifest.json"]
 
                     // === 修改点：在非build-only模式下才归档安全报告 ===
                     if (env.BUILD_MODE != 'build-only' && fileExists('trivy-report.html')) {
