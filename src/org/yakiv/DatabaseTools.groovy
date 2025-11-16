@@ -554,20 +554,38 @@ class DatabaseTools implements Serializable {
      */
     def getPreviousSuccessfulVersion(String projectName, String environment, String currentVersion) {
         def sql = null
+        def stmt = null
+        def resultSet = null
         try {
             sql = getConnection()
+            if (!sql) {
+                steps.echo "⚠️ 数据库连接不可用，跳过查询上一个成功版本"
+                return null
+            }
 
             def query = """
-            SELECT version, deploy_time, git_commit, build_url
-            FROM deployment_records
-            WHERE project_name = ? AND environment = ? AND status = 'SUCCESS' AND version != ?
-            ORDER BY deploy_time DESC
-            LIMIT 1
-        """
+                SELECT version, deploy_time, git_commit, build_url
+                FROM deployment_records
+                WHERE project_name = ? AND environment = ? AND status = 'SUCCESS' AND version != ?
+                ORDER BY deploy_time DESC
+                LIMIT 1
+            """
 
-            def result = sql.firstRow(query, [projectName, environment, currentVersion])
+            // 使用 PreparedStatement
+            stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, environment?.toString())
+            stmt.setString(3, currentVersion?.toString())
 
-            if (result) {
+            resultSet = stmt.executeQuery()
+
+            if (resultSet.next()) {
+                def result = [
+                        version: resultSet.getString("version"),
+                        deploy_time: resultSet.getTimestamp("deploy_time"),
+                        git_commit: resultSet.getString("git_commit"),
+                        build_url: resultSet.getString("build_url")
+                ]
                 steps.echo "✅ 找到上一个成功版本: ${result.version}"
                 return result
             } else {
@@ -577,9 +595,25 @@ class DatabaseTools implements Serializable {
 
         } catch (Exception e) {
             steps.echo "❌ 获取上一个成功版本失败: ${e.message}"
+            steps.echo "详细堆栈: ${e.stackTrace.take(5).join('\n')}"
             return null
         } finally {
-            sql?.close()
+            // 确保资源被正确关闭
+            try {
+                resultSet?.close()
+            } catch (Exception e) {
+                steps.echo "关闭结果集时出错: ${e.message}"
+            }
+            try {
+                stmt?.close()
+            } catch (Exception e) {
+                steps.echo "关闭语句时出错: ${e.message}"
+            }
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "关闭数据库连接时出错: ${e.message}"
+            }
         }
     }
 }
