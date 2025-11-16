@@ -552,9 +552,6 @@ class DeployTools implements Serializable {
                         
                         # 检查应用特定端点（如果有）
                         curl -f -s -o /dev/null -w "应用状态: %{http_code}\\\\n" ${url}/hello || echo "应用特定端点检查跳过"
-                        
-                        # 检查数据库连接（如果应用有数据库健康检查）
-                        curl -f -s -o /dev/null -w "数据库状态: %{http_code}\\\\n" ${url}/actuator/health || echo "执行器健康检查跳过"
                     """
                     healthCheckSuccess = true
                     steps.echo "✅ 健康检查通过"
