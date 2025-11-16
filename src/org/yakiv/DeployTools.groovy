@@ -5,14 +5,11 @@ class DeployTools implements Serializable {
     def env
     def configLoader
     def dbTools
-    // === 新增：当前部署记录跟踪 ===
-    def currentDeploymentRecordId = null
 
     DeployTools(steps, env, configLoader) {
         this.steps = steps
         this.env = env
         this.configLoader = configLoader
-        // === 修改点：初始化数据库工具 ===
         this.dbTools = new DatabaseTools(steps, env, configLoader)
     }
 
@@ -26,7 +23,6 @@ class DeployTools implements Serializable {
         steps.dir(workspaceDir) {
             prepareAnsibleEnvironment(config.environment, config)
 
-            // === 修改点：移除 Harbor 凭据传递，因为宿主机已经配置好 ===
             def extraVars = [
                     project_name: config.projectName,
                     app_version: config.version,
@@ -75,7 +71,6 @@ class DeployTools implements Serializable {
         }
     }
 
-    // ========== 修改点3：移除手动回滚方法 ==========
     /**
      * 增强的部署方法 - 包含自动回滚功能
      */
@@ -83,7 +78,6 @@ class DeployTools implements Serializable {
         def startTime = System.currentTimeMillis()
 
         try {
-            // === 记录开始信息到 Jenkins 日志 ===
             steps.echo "🚀 开始部署流程"
             steps.echo "项目: ${config.projectName}"
             steps.echo "环境: ${config.environment}"
@@ -96,7 +90,6 @@ class DeployTools implements Serializable {
             // 执行部署
             deployToEnvironment(config)
 
-            // === 记录成功信息 ===
             def duration = (System.currentTimeMillis() - startTime) / 1000
             steps.echo "✅ 部署成功完成 - 耗时: ${duration}秒"
 
@@ -106,7 +99,6 @@ class DeployTools implements Serializable {
             return true
 
         } catch (Exception deployError) {
-            // === 记录失败信息到 Jenkins 日志 ===
             def duration = (System.currentTimeMillis() - startTime) / 1000
             steps.echo "❌ 部署失败: ${deployError.message}"
             steps.echo "⏱️ 部署耗时: ${duration}秒"
@@ -137,7 +129,6 @@ class DeployTools implements Serializable {
                     recordAutoRollbackSuccess(config)
                 } else {
                     steps.echo "❌ 自动回滚失败"
-//                    recordAutoRollbackFailure(config)
                     throw deployError
                 }
             } else {
@@ -326,13 +317,13 @@ class DeployTools implements Serializable {
         // 可以在数据库中标记回滚成功，或者保持部署失败状态
     }
 
+    // ========== 修改点3：添加构建版本验证方法 ==========
     /**
-     * 记录自动回滚失败
+     * 验证构建版本是否存在
      */
-//    private def recordAutoRollbackFailure(Map config) {
-//        steps.echo "❌ 自动回滚执行失败"
-//        // 可以在数据库中标记回滚失败
-//    }
+    def validateBuildVersion(String projectName, String version) {
+        return dbTools.validateBuildVersion(projectName, version)
+    }
 
     // === 新增：获取可回滚版本的方法 ===
     def getAvailableRollbackVersions(String projectName, String environment, int limit = 10) {
@@ -343,11 +334,6 @@ class DeployTools implements Serializable {
     def validateRollbackVersion(String projectName, String environment, String version) {
         return dbTools.validateRollbackVersion(projectName, environment, version)
     }
-
-    // === 新增：数据库初始化方法 ===
-//    def initializeDatabase() {
-//        return dbTools.initializeDatabase()
-//    }
 
     // === 新增：数据库连接测试方法 ===
     def testDatabaseConnection() {

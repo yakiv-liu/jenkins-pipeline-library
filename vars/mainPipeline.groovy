@@ -3,8 +3,24 @@ def call(Map userConfig = [:]) {
     def configLoader = new org.yakiv.Config(steps)
     def config = configLoader.mergeConfig(userConfig)
 
-    // ========== 修改点1：移除严格的PR检查，因为路由已在Jenkinsfile中处理 ==========
+    // ========== 修改点1：在流水线开始前预加载版本列表 ==========
     echo "✅ 开始执行 main pipeline - 分支: ${env.BRANCH_NAME}"
+
+    // 预加载版本列表用于参数验证
+//    def availableVersions = []
+//    if (config.buildMode == 'deploy-only') {
+//        try {
+//            def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
+//            if (dbTools.testConnection()) {
+//                availableVersions = dbTools.getRecentBuildVersions(config.projectName, 10)
+//                echo "✅ 预加载了 ${availableVersions.size()} 个可用版本"
+//            } else {
+//                echo "⚠️ 数据库连接失败，无法预加载版本列表"
+//            }
+//        } catch (Exception e) {
+//            echo "⚠️ 预加载版本列表失败: ${e.message}"
+//        }
+//    }
 
     pipeline {
         agent {
@@ -23,8 +39,6 @@ def call(Map userConfig = [:]) {
             HARBOR_URL = "${configLoader.getHarborUrl()}"
             SONAR_URL = "${configLoader.getSonarUrl()}"
             TRIVY_URL = "${configLoader.getTrivyUrl()}"
-            // === 修改点：不再使用文件备份目录 ===
-            // BACKUP_DIR = "${env.WORKSPACE}/backups"
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
@@ -115,8 +129,19 @@ def call(Map userConfig = [:]) {
                         // ========== 修改点7：在deploy-only模式下验证部署版本 ==========
                         if (env.BUILD_MODE == 'deploy-only') {
                             if (!env.APP_VERSION) {
-                                error "在deploy-only模式下必须填写部署版本号"
+                                error "在deploy-only模式下必须选择部署版本号"
                             }
+
+                            // 验证版本是否存在
+                            if (dbTestResult) {
+                                def versionValid = deployTools.validateBuildVersion(env.PROJECT_NAME, env.APP_VERSION)
+                                if (!versionValid) {
+                                    error "选择的部署版本 ${env.APP_VERSION} 不存在或构建失败，请选择有效的版本"
+                                }
+                            } else {
+                                steps.echo "⚠️ 数据库连接失败，跳过版本验证"
+                            }
+
                             steps.echo "✅ 部署版本验证通过: ${env.APP_VERSION}"
                         }
 
@@ -163,7 +188,6 @@ def call(Map userConfig = [:]) {
                                 build_time: buildTime,
                                 build_url: env.BUILD_URL,
                                 build_mode: env.BUILD_MODE,
-                                rollback_enabled: (env.BUILD_MODE != 'build-only'),
                                 database_enabled: true
                         ]
 
@@ -204,21 +228,47 @@ def call(Map userConfig = [:]) {
                             )
                         }
 
-                        // === 修改点：在build-only模式下跳过镜像推送 ===
-                        if (env.BUILD_MODE != 'build-only') {
-                            buildTools.pushDockerImage(
-                                    projectName: env.PROJECT_NAME,
-                                    version: env.APP_VERSION,
-                                    harborUrl: env.HARBOR_URL
-                            )
-                        } else {
-                            echo "🔒 build-only 模式：跳过 Docker 镜像推送"
+                        // ========== 修改点11：在build-only模式下也进行镜像推送 ==========
+                        echo "🚀 推送 Docker 镜像到仓库..."
+                        buildTools.pushDockerImage(
+                                projectName: env.PROJECT_NAME,
+                                version: env.APP_VERSION,
+                                harborUrl: env.HARBOR_URL
+                        )
+
+                        // ========== 修改点12：记录构建信息到数据库 ==========
+                        echo "📝 记录构建信息到数据库..."
+                        try {
+                            def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
+                            if (dbTools.testConnection()) {
+                                dbTools.recordBuild([
+                                        projectName: env.PROJECT_NAME,
+                                        version: env.APP_VERSION,
+                                        gitCommit: env.GIT_COMMIT,
+                                        gitBranch: env.PROJECT_BRANCH,
+                                        buildTimestamp: new Date(),
+                                        buildStatus: 'SUCCESS',
+                                        dockerImage: "${env.HARBOR_URL}/${env.PROJECT_NAME}:${env.APP_VERSION}",
+                                        jenkinsBuildUrl: env.BUILD_URL,
+                                        jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
+                                        metadata: [
+                                                buildMode: env.BUILD_MODE,
+                                                skipDependencyCheck: env.SKIP_DEPENDENCY_CHECK,
+                                                buildAgent: env.NODE_NAME
+                                        ]
+                                ])
+                                echo "✅ 构建记录已保存到数据库: ${env.APP_VERSION}"
+                            } else {
+                                echo "⚠️ 数据库连接失败，跳过记录构建信息"
+                            }
+                        } catch (Exception e) {
+                            echo "❌ 记录构建信息失败: ${e.message}"
                         }
                     }
                 }
             }
 
-            // ========== 修改点11：在full-pipeline模式下执行安全扫描 ==========
+            // ========== 修改点13：在full-pipeline模式下执行安全扫描 ==========
             stage('Security Scan') {
                 when {
                     expression { env.BUILD_MODE == 'full-pipeline' }
@@ -238,7 +288,7 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                // ========== 修改点12：在项目目录下执行Sonar扫描 ==========
+                                // ========== 修改点14：在项目目录下执行Sonar扫描 ==========
                                 dir(env.PROJECT_DIR) {
                                     securityTools.fastSonarScan(
                                             projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
@@ -256,7 +306,7 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                // ========== 修改点13：在项目目录下执行依赖检查 ==========
+                                // ========== 修改点15：在项目目录下执行依赖检查 ==========
                                 dir(env.PROJECT_DIR) {
                                     securityTools.fastDependencyCheck()
                                 }
@@ -266,7 +316,7 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点14：在full-pipeline模式下执行质量门检查 ==========
+            // ========== 修改点16：在full-pipeline模式下执行质量门检查 ==========
             stage('Quality Gate') {
                 when {
                     expression { env.BUILD_MODE == 'full-pipeline' }
@@ -304,7 +354,7 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点15：在full-pipeline和deploy-only模式下执行部署 ==========
+            // ========== 修改点17：在full-pipeline和deploy-only模式下执行部署 ==========
             stage('Deploy') {
                 when {
                     expression {
@@ -353,8 +403,6 @@ def call(Map userConfig = [:]) {
                     }
                 }
             }
-
-            // ========== 修改点16：移除回滚阶段 ==========
         }
 
         post {

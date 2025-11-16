@@ -616,4 +616,159 @@ class DatabaseTools implements Serializable {
             }
         }
     }
+
+    /**
+     * 记录构建信息
+     */
+    def recordBuild(Map config) {
+        def sql = null
+        try {
+            sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过记录构建信息"
+                return
+            }
+
+            def insertSql = """
+            INSERT INTO build_records (
+                project_name, version, git_commit, git_branch,
+                build_timestamp, build_status, docker_image,
+                jenkins_build_url, jenkins_build_number, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+        """
+
+            def stmt = sql.connection.prepareStatement(insertSql)
+            stmt.setString(1, config.projectName?.toString())
+            stmt.setString(2, config.version?.toString())
+            stmt.setString(3, config.gitCommit?.toString())
+            stmt.setString(4, config.gitBranch?.toString())
+            stmt.setTimestamp(5, new java.sql.Timestamp(config.buildTimestamp.getTime()))
+            stmt.setString(6, config.buildStatus?.toString())
+            stmt.setString(7, config.dockerImage?.toString())
+            stmt.setString(8, config.jenkinsBuildUrl?.toString())
+            stmt.setInt(9, config.jenkinsBuildNumber as Integer)
+            stmt.setObject(10, groovy.json.JsonOutput.toJson(config.metadata ?: [:]), java.sql.Types.OTHER)
+
+            def result = stmt.executeUpdate()
+            stmt.close()
+
+            steps.echo "✅ 构建记录已保存: ${config.projectName} ${config.version}"
+
+        } catch (Exception e) {
+            steps.echo "❌ 保存构建记录失败: ${e.message}"
+        } finally {
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
+        }
+    }
+
+/**
+ * 获取项目的最新构建版本
+ */
+    def getRecentBuildVersions(String projectName, int limit = 10) {
+        def sql = null
+        try {
+            sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过查询构建版本"
+                return []
+            }
+
+            def query = """
+            SELECT version, build_timestamp, git_commit, docker_image, build_status
+            FROM build_records
+            WHERE project_name = ? AND build_status = 'SUCCESS'
+            ORDER BY build_timestamp DESC
+            LIMIT ?
+        """
+
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setInt(2, limit)
+
+            def rs = stmt.executeQuery()
+            def results = []
+
+            while (rs.next()) {
+                results.add([
+                        version: rs.getString("version"),
+                        build_timestamp: rs.getTimestamp("build_timestamp"),
+                        git_commit: rs.getString("git_commit"),
+                        docker_image: rs.getString("docker_image"),
+                        build_status: rs.getString("build_status")
+                ])
+            }
+
+            rs.close()
+            stmt.close()
+
+            steps.echo "✅ 从数据库获取到 ${results.size()} 个构建版本"
+            return results
+
+        } catch (Exception e) {
+            steps.echo "❌ 获取构建版本失败: ${e.message}"
+            return []
+        } finally {
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
+        }
+    }
+
+/**
+ * 验证构建版本是否存在
+ */
+    def validateBuildVersion(String projectName, String version) {
+        def sql = null
+        try {
+            sql = getConnection()
+            if (!sql) {
+                steps.echo "❌ 无法获取数据库连接，跳过验证构建版本"
+                return false
+            }
+
+            def query = """
+            SELECT COUNT(*) as count
+            FROM build_records
+            WHERE project_name = ? AND version = ? AND build_status = 'SUCCESS'
+        """
+
+            def stmt = sql.connection.prepareStatement(query)
+            stmt.setString(1, projectName?.toString())
+            stmt.setString(2, version?.toString())
+
+            def rs = stmt.executeQuery()
+            def exists = false
+
+            if (rs.next()) {
+                exists = rs.getLong("count") > 0
+            }
+
+            rs.close()
+            stmt.close()
+
+            if (exists) {
+                steps.echo "✅ 构建版本验证通过: ${version}"
+            } else {
+                steps.echo "❌ 构建版本不存在: ${version}"
+            }
+
+            return exists
+
+        } catch (Exception e) {
+            steps.echo "❌ 验证构建版本失败: ${e.message}"
+            return false
+        } finally {
+            try {
+                sql?.close()
+            } catch (Exception e) {
+                steps.echo "⚠️ 关闭数据库连接时出现警告: ${e.message}"
+            }
+        }
+    }
 }
