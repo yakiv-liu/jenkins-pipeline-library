@@ -199,7 +199,7 @@ class DeployTools implements Serializable {
                     recordAutoRollbackSuccess(config)
                 } else {
                     steps.echo "❌ 自动回滚失败"
-                    recordAutoRollbackFailure(config)
+//                    recordAutoRollbackFailure(config)
                     throw deployError
                 }
             } else {
@@ -391,10 +391,10 @@ class DeployTools implements Serializable {
     /**
      * 记录自动回滚失败
      */
-    private def recordAutoRollbackFailure(Map config) {
-        steps.echo "❌ 自动回滚执行失败"
-        // 可以在数据库中标记回滚失败
-    }
+//    private def recordAutoRollbackFailure(Map config) {
+//        steps.echo "❌ 自动回滚执行失败"
+//        // 可以在数据库中标记回滚失败
+//    }
 
     // === 新增：获取可回滚版本的方法 ===
     def getAvailableRollbackVersions(String projectName, String environment, int limit = 10) {
