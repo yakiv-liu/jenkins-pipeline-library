@@ -5,7 +5,7 @@
     app_name: "{{ project_name }}"
     target_host: "{{ ansible_host }}"
     # 健康检查配置
-    health_check_max_retries: 12
+    health_check_max_retries: 3
     health_check_retry_delay: 5
 
   tasks:
