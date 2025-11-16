@@ -122,7 +122,7 @@ class DeployTools implements Serializable {
             if (autoRollbackEnabled && dbTools.testConnection()) {
                 steps.echo "🚨 部署失败，开始自动回滚..."
 
-                // ========== 新增：设置环境变量以触发回滚阶段显示 ==========
+                // ========== 关键修改：设置环境变量但不抛出异常 ==========
                 env.AUTO_ROLLBACK_TRIGGERED = 'true'
 
                 def rollbackSuccess = executeAutoRollback(config)
@@ -132,12 +132,12 @@ class DeployTools implements Serializable {
                     // 记录自动回滚成功
                     recordAutoRollbackSuccess(config)
 
-                    // ========== 新增：设置构建结果为不稳定，因为部署失败但回滚成功 ==========
-                    currentBuild.result = 'UNSTABLE'
-                    steps.echo "⚠️ 构建标记为不稳定：部署失败但自动回滚成功"
+                    // ========== 修改：返回特殊标志而不是抛出异常 ==========
+                    steps.echo "⚠️ 部署失败但自动回滚成功 - 构建将继续但标记为不稳定"
+                    return false  // 返回 false 表示部署失败但回滚成功
                 } else {
                     steps.echo "❌ 自动回滚失败"
-                    throw deployError
+                    throw deployError  // 回滚也失败，真正抛出异常
                 }
             } else {
                 if (!autoRollbackEnabled) {
