@@ -20,7 +20,10 @@ class DeployTools implements Serializable {
      * 部署到环境 - 基础方法
      */
     def deployToEnvironment(Map config) {
-        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+        // ========== 修改点1：在deploy-only模式下使用不同目录 ==========
+        def workspaceDir = env.BUILD_MODE == 'deploy-only' ? "${env.WORKSPACE}" : "${env.WORKSPACE}/${env.PROJECT_DIR}"
+
+        steps.dir(workspaceDir) {
             prepareAnsibleEnvironment(config.environment, config)
 
             // === 修改点：移除 Harbor 凭据传递，因为宿主机已经配置好 ===
@@ -33,7 +36,8 @@ class DeployTools implements Serializable {
                     app_port: config.appPort,
                     app_dir: getAppDir(config.environment),
                     backup_dir: config.backupDir ?: '/opt/backups',
-                    git_commit: env.GIT_COMMIT ?: 'unknown'
+                    // ========== 修改点2：在deploy-only模式下使用未知git commit ==========
+                    git_commit: env.BUILD_MODE == 'deploy-only' ? 'deploy-only-no-commit' : (env.GIT_COMMIT ?: 'unknown')
             ]
 
             steps.ansiblePlaybook(
@@ -51,7 +55,7 @@ class DeployTools implements Serializable {
                         projectName: config.projectName,
                         environment: config.environment,
                         version: config.version,
-                        gitCommit: env.GIT_COMMIT,
+                        gitCommit: env.BUILD_MODE == 'deploy-only' ? 'deploy-only' : env.GIT_COMMIT,
                         buildUrl: env.BUILD_URL,
                         buildTimestamp: new Date(),
                         jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
@@ -71,73 +75,7 @@ class DeployTools implements Serializable {
         }
     }
 
-    /**
-     * 执行回滚操作
-     */
-    def executeRollback(Map config) {
-        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-            // === 修改点：回滚前验证版本是否存在 ===
-            steps.echo "验证回滚版本: ${config.version}"
-            def versionValid = false
-
-            if (dbTools.testConnection()) {
-                versionValid = dbTools.validateRollbackVersion(
-                        config.projectName,
-                        config.environment,
-                        config.version
-                )
-            } else {
-                steps.echo "⚠️ 数据库连接失败，跳过版本验证"
-                versionValid = true // 假设版本有效，继续执行
-            }
-
-            if (!versionValid) {
-                error "回滚版本 ${config.version} 不存在或部署状态异常，无法执行回滚"
-            }
-
-            prepareAnsibleEnvironment(config.environment, config)
-
-            // === 修改点：移除 Harbor 凭据传递，因为宿主机已经配置好 ===
-            def extraVars = [
-                    project_name: config.projectName,
-                    rollback_version: config.version,
-                    deploy_env: config.environment,
-                    harbor_url: config.harborUrl,
-                    app_port: config.appPort,
-                    app_dir: getAppDir(config.environment),
-                    backup_dir: config.backupDir ?: '/opt/backups'
-            ]
-
-            steps.ansiblePlaybook(
-                    playbook: 'ansible-playbooks/rollback.yml',
-                    inventory: "inventory/${config.environment}",
-                    extraVars: extraVars,
-                    credentialsId: 'ansible-ssh-key',
-                    disableHostKeyChecking: true
-            )
-
-            // === 修改点：回滚成功后记录到数据库 ===
-            steps.echo "开始记录回滚信息到数据库..."
-            try {
-                def currentVersion = dbTools.getLatestVersion(config.projectName, config.environment)
-                dbTools.recordRollback([
-                        projectName: config.projectName,
-                        environment: config.environment,
-                        rollbackVersion: config.version,
-                        currentVersion: currentVersion ?: 'unknown',
-                        buildUrl: env.BUILD_URL,
-                        jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
-                        jenkinsJobName: env.JOB_NAME,
-                        rollbackUser: env.ROLLBACK_APPROVER ?: 'system',
-                        reason: "Manual rollback via Jenkins",
-                        status: 'SUCCESS'
-                ])
-            } catch (Exception e) {
-                steps.echo "⚠️ 回滚记录保存失败，但不影响回滚流程: ${e.message}"
-            }
-        }
-    }
-
+    // ========== 修改点3：移除手动回滚方法 ==========
     /**
      * 增强的部署方法 - 包含自动回滚功能
      */
@@ -325,7 +263,7 @@ class DeployTools implements Serializable {
                     projectName: config.projectName,
                     environment: config.environment,
                     version: config.version,
-                    gitCommit: env.GIT_COMMIT,
+                    gitCommit: env.BUILD_MODE == 'deploy-only' ? 'deploy-only' : env.GIT_COMMIT,
                     buildUrl: env.BUILD_URL,
                     buildTimestamp: new Date(startTime),
                     jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),

@@ -28,10 +28,11 @@ def call(Map userConfig = [:]) {
 
             // 动态环境变量
             BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-            APP_VERSION = "${BUILD_TIMESTAMP}"
-            // ========== 修改点2：在共享库中获取GIT_COMMIT ==========
+            // ========== 修改点2：根据模式设置APP_VERSION ==========
+            APP_VERSION = "${config.buildMode == 'deploy-only' ? (config.deployVersion ?: '') : BUILD_TIMESTAMP}"
+            // ========== 修改点3：在共享库中获取GIT_COMMIT ==========
             GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-            // ========== 修改点3：项目目录改为项目名称对应的目录 ==========
+            // ========== 修改点4：项目目录改为项目名称对应的目录 ==========
             PROJECT_DIR = "${config.projectName}"
 
             // === 新增环境变量：跳过依赖检查标志 ===
@@ -42,8 +43,11 @@ def call(Map userConfig = [:]) {
         }
 
         stages {
-            // ========== 修改点4：新增Checkout阶段 ==========
+            // ========== 修改点5：在deploy-only模式下跳过代码检出 ==========
             stage('Checkout Project Code') {
+                when {
+                    expression { env.BUILD_MODE != 'deploy-only' }
+                }
                 steps {
                     script {
                         echo "📥 开始检出项目代码..."
@@ -61,7 +65,7 @@ def call(Map userConfig = [:]) {
                                 extensions: [
                                         // 清理工作空间
                                         [$class: 'CleanCheckout'],
-                                        // ========== 修改点5：设置相对目标目录为项目名称 ==========
+                                        // ========== 修改点6：设置相对目标目录为项目名称 ==========
                                         [$class: 'RelativeTargetDirectory', relativeTargetDir: "${config.projectName}"]
                                 ]
                         ])
@@ -106,49 +110,23 @@ def call(Map userConfig = [:]) {
                         env.PROJECT_BRANCH = config.projectBranch ?: 'main'
 
                         env.DEPLOY_ENV = config.deployEnv
-                        env.ROLLBACK = config.rollback.toString()
-                        env.ROLLBACK_VERSION = config.rollbackVersion ?: ''
                         env.EMAIL_RECIPIENTS = config.defaultEmail
 
-                        // === 修改点：回滚时验证版本（仅在数据库连接正常时）===
-                        if (env.ROLLBACK.toBoolean() && env.ROLLBACK_VERSION) {
-                            if (dbTestResult) {
-                                steps.echo "验证回滚版本: ${env.ROLLBACK_VERSION}"
-                                def versionValid = deployTools.validateRollbackVersion(
-                                        env.PROJECT_NAME,
-                                        env.DEPLOY_ENV,
-                                        env.ROLLBACK_VERSION
-                                )
-
-                                if (!versionValid) {
-                                    error "回滚版本 ${env.ROLLBACK_VERSION} 不存在或无效，请检查版本号"
-                                }
-                            } else {
-                                steps.echo "⚠️ 数据库连接失败，跳过回滚版本验证"
-                                // 您可以选择在这里报错或继续执行
-                                // error "数据库连接失败，无法验证回滚版本"
+                        // ========== 修改点7：在deploy-only模式下验证部署版本 ==========
+                        if (env.BUILD_MODE == 'deploy-only') {
+                            if (!env.APP_VERSION) {
+                                error "在deploy-only模式下必须填写部署版本号"
                             }
+                            steps.echo "✅ 部署版本验证通过: ${env.APP_VERSION}"
                         }
 
                         // === 显示依赖检查配置 ===
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
                         // === 显示构建模式 ===
                         echo "构建模式: ${env.BUILD_MODE}"
-
-                        // 参数验证
-                        if (env.ROLLBACK.toBoolean() && !env.ROLLBACK_VERSION) {
-                            error "回滚操作必须指定回滚版本号"
-                        }
-
-                        // === 修改点：在build-only模式下禁用回滚 ===
-                        if (env.ROLLBACK.toBoolean() && env.BUILD_MODE == 'build-only') {
-                            error "回滚操作在 build-only 模式下不可用"
-                        }
-
-                        if (env.ROLLBACK.toBoolean() && env.DEPLOY_ENV == 'prod') {
-                            input message: "确认在生产环境执行回滚?\n回滚版本: ${env.ROLLBACK_VERSION}",
-                                    ok: '确认回滚',
-                                    submitterParameter: 'ROLLBACK_APPROVER'
+                        // === 显示部署版本（如果是deploy-only模式）===
+                        if (env.BUILD_MODE == 'deploy-only') {
+                            echo "部署版本: ${env.APP_VERSION}"
                         }
 
                         currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-${env.DEPLOY_ENV}"
@@ -167,8 +145,11 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点6：重命名并简化原来的Checkout & Setup阶段 ==========
+            // ========== 修改点8：在deploy-only模式下跳过项目设置 ==========
             stage('Project Setup') {
+                when {
+                    expression { env.BUILD_MODE != 'deploy-only' }
+                }
                 steps {
                     script {
                         echo "✅ 项目代码已在前置阶段检出"
@@ -200,14 +181,17 @@ def call(Map userConfig = [:]) {
                 }
             }
 
+            // ========== 修改点9：在build-only和full-pipeline模式下执行构建 ==========
             stage('Build') {
                 when {
-                    expression { !env.ROLLBACK.toBoolean() }
+                    expression {
+                        env.BUILD_MODE == 'full-pipeline' || env.BUILD_MODE == 'build-only'
+                    }
                 }
                 steps {
                     script {
                         def buildTools = new org.yakiv.BuildTools(steps, env)
-                        // ========== 修改点7：在项目目录下执行构建 ==========
+                        // ========== 修改点10：在项目目录下执行构建 ==========
                         dir(env.PROJECT_DIR) {
                             buildTools.mavenBuild(
                                     version: env.APP_VERSION
@@ -234,12 +218,10 @@ def call(Map userConfig = [:]) {
                 }
             }
 
+            // ========== 修改点11：在full-pipeline模式下执行安全扫描 ==========
             stage('Security Scan') {
                 when {
-                    allOf {
-                        expression { !env.ROLLBACK.toBoolean() }
-                        expression { env.BUILD_MODE != 'build-only' }
-                    }
+                    expression { env.BUILD_MODE == 'full-pipeline' }
                 }
                 parallel {
                     stage('Trivy Scan') {
@@ -256,7 +238,7 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                // ========== 修改点8：在项目目录下执行Sonar扫描 ==========
+                                // ========== 修改点12：在项目目录下执行Sonar扫描 ==========
                                 dir(env.PROJECT_DIR) {
                                     securityTools.fastSonarScan(
                                             projectKey: "${env.PROJECT_NAME}-${env.APP_VERSION}",
@@ -274,7 +256,7 @@ def call(Map userConfig = [:]) {
                         steps {
                             script {
                                 def securityTools = new org.yakiv.SecurityTools(steps, env)
-                                // ========== 修改点9：在项目目录下执行依赖检查 ==========
+                                // ========== 修改点13：在项目目录下执行依赖检查 ==========
                                 dir(env.PROJECT_DIR) {
                                     securityTools.fastDependencyCheck()
                                 }
@@ -284,12 +266,10 @@ def call(Map userConfig = [:]) {
                 }
             }
 
+            // ========== 修改点14：在full-pipeline模式下执行质量门检查 ==========
             stage('Quality Gate') {
                 when {
-                    allOf {
-                        expression { !env.ROLLBACK.toBoolean() }
-                        expression { env.BUILD_MODE != 'build-only' }
-                    }
+                    expression { env.BUILD_MODE == 'full-pipeline' }
                 }
                 steps {
                     script {
@@ -324,14 +304,12 @@ def call(Map userConfig = [:]) {
                 }
             }
 
+            // ========== 修改点15：在full-pipeline和deploy-only模式下执行部署 ==========
             stage('Deploy') {
                 when {
-                    allOf {
-                        expression { !env.ROLLBACK.toBoolean() }
-                        expression {
-                            (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') &&
-                                    env.BUILD_MODE != 'build-only'
-                        }
+                    expression {
+                        (env.DEPLOY_ENV == 'staging' || env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') &&
+                                (env.BUILD_MODE == 'full-pipeline' || env.BUILD_MODE == 'deploy-only')
                     }
                 }
                 steps {
@@ -351,9 +329,12 @@ def call(Map userConfig = [:]) {
                         steps.echo "  - 项目: ${env.PROJECT_NAME}"
                         steps.echo "  - 环境: ${env.DEPLOY_ENV}"
                         steps.echo "  - 版本: ${env.APP_VERSION}"
-                        steps.echo "  - 分支: ${env.PROJECT_BRANCH}"
-                        steps.echo "  - 项目目录: ${env.PROJECT_DIR}"
-                        steps.echo "  - Git Commit: ${env.GIT_COMMIT}"
+                        steps.echo "  - 模式: ${env.BUILD_MODE}"
+                        if (env.BUILD_MODE != 'deploy-only') {
+                            steps.echo "  - 分支: ${env.PROJECT_BRANCH}"
+                            steps.echo "  - 项目目录: ${env.PROJECT_DIR}"
+                            steps.echo "  - Git Commit: ${env.GIT_COMMIT}"
+                        }
 
                         // === 修改点：使用带自动回滚的部署方法 ===
                         def deployConfig = [
@@ -373,39 +354,7 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            stage('Rollback') {
-                when {
-                    allOf {
-                        expression { env.ROLLBACK.toBoolean() }
-                        expression { env.BUILD_MODE != 'build-only' }
-                    }
-                }
-                steps {
-                    script {
-                        def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
-
-                        steps.echo "🔄 开始执行回滚操作"
-                        steps.echo "  - 项目: ${env.PROJECT_NAME}"
-                        steps.echo "  - 环境: ${env.DEPLOY_ENV}"
-                        steps.echo "  - 回滚版本: ${env.ROLLBACK_VERSION}"
-                        steps.echo "  - 审批人: ${env.ROLLBACK_APPROVER ?: '手动触发'}"
-
-                        deployTools.executeRollback([
-                                projectName: env.PROJECT_NAME,
-                                environment: env.DEPLOY_ENV,
-                                version: env.ROLLBACK_VERSION,
-                                harborUrl: env.HARBOR_URL,
-                                appPort: configLoader.getAppPort(config),
-                                environmentHosts: config.environmentHosts
-                        ])
-
-                        steps.echo "✅ 回滚操作完成"
-                    }
-                }
-            }
-
-            // === 修改点：移除独立的 Post-Deployment Validation 阶段 ===
-            // 健康检查已经在 Ansible playbook 中完成，不需要单独的阶段
+            // ========== 修改点16：移除回滚阶段 ==========
         }
 
         post {
@@ -416,22 +365,21 @@ def call(Map userConfig = [:]) {
 
                     // 确定流水线类型
                     def pipelineType = 'DEPLOYMENT'
-                    if (env.ROLLBACK.toBoolean()) {
-                        pipelineType = 'ROLLBACK'
-                    } else if (currentBuild.result == 'ABORTED') {
+                    if (currentBuild.result == 'ABORTED') {
                         pipelineType = 'ABORTED'
                     } else if (env.BUILD_MODE == 'build-only') {
                         pipelineType = 'BUILD_ONLY'
+                    } else if (env.BUILD_MODE == 'deploy-only') {
+                        pipelineType = 'DEPLOY_ONLY'
                     }
 
                     notificationTools.sendPipelineNotification(
                             project: env.PROJECT_NAME,
                             environment: env.DEPLOY_ENV,
-                            version: env.ROLLBACK.toBoolean() ? env.ROLLBACK_VERSION : env.APP_VERSION,
+                            version: env.APP_VERSION,
                             status: currentBuild.result,
                             recipients: env.EMAIL_RECIPIENTS,
                             buildUrl: env.BUILD_URL,
-                            isRollback: env.ROLLBACK.toBoolean(),
                             pipelineType: pipelineType,
                             attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null)
                     )
@@ -445,10 +393,13 @@ def call(Map userConfig = [:]) {
                     }
 
                     // === 修改点：添加备份文件到归档 ===
-                    def artifactsToArchive = ["${env.PROJECT_DIR}/deployment-manifest.json"]
+                    def artifactsToArchive = []
+                    if (env.BUILD_MODE != 'deploy-only') {
+                        artifactsToArchive << "${env.PROJECT_DIR}/deployment-manifest.json"
+                    }
 
                     // === 修改点：在非build-only模式下才归档安全报告 ===
-                    if (env.BUILD_MODE != 'build-only' && fileExists('trivy-report.html')) {
+                    if (env.BUILD_MODE == 'full-pipeline' && fileExists('trivy-report.html')) {
                         artifactsToArchive << 'trivy-report.html'
                         publishHTML([
                                 allowMissing: false,
@@ -460,7 +411,9 @@ def call(Map userConfig = [:]) {
                         ])
                     }
 
-                    archiveArtifacts artifacts: artifactsToArchive.join(','), fingerprint: true
+                    if (artifactsToArchive) {
+                        archiveArtifacts artifacts: artifactsToArchive.join(','), fingerprint: true
+                    }
 
                     cleanWs()
                 }
