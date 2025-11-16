@@ -195,10 +195,10 @@ def call(Map userConfig = [:]) {
                             ls -la ${env.PROJECT_DIR}/
                             echo "=== 检查 pom.xml ==="
                             ls -la ${env.PROJECT_DIR}/pom.xml && echo "✓ pom.xml 存在" || echo "✗ pom.xml 不存在"
-                            echo "=== 检查分支信息 ==="
-                            cd ${env.PROJECT_DIR} && git branch -a && echo "当前分支:" && git branch --show-current
-                            echo "=== 检查Git提交 ==="
-                            cd ${env.PROJECT_DIR} && git log -1 --oneline
+//                            echo "=== 检查分支信息 ==="
+//                            cd ${env.PROJECT_DIR} && git branch -a && echo "当前分支:" && git branch --show-current
+//                            echo "=== 检查Git提交 ==="
+//                            cd ${env.PROJECT_DIR} && git log -1 --oneline
                         """
                     }
                 }
