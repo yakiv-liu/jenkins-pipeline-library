@@ -548,4 +548,38 @@ class DatabaseTools implements Serializable {
             }
         }
     }
+
+    /**
+     * 获取上一个成功的部署版本（用于自动回滚）
+     */
+    def getPreviousSuccessfulVersion(String projectName, String environment, String currentVersion) {
+        def sql = null
+        try {
+            sql = getConnection()
+
+            def query = """
+            SELECT version, deploy_time, git_commit, build_url
+            FROM deployment_records
+            WHERE project_name = ? AND environment = ? AND status = 'SUCCESS' AND version != ?
+            ORDER BY deploy_time DESC
+            LIMIT 1
+        """
+
+            def result = sql.firstRow(query, [projectName, environment, currentVersion])
+
+            if (result) {
+                steps.echo "✅ 找到上一个成功版本: ${result.version}"
+                return result
+            } else {
+                steps.echo "❌ 没有找到上一个成功版本"
+                return null
+            }
+
+        } catch (Exception e) {
+            steps.echo "❌ 获取上一个成功版本失败: ${e.message}"
+            return null
+        } finally {
+            sql?.close()
+        }
+    }
 }
