@@ -3,24 +3,7 @@ def call(Map userConfig = [:]) {
     def configLoader = new org.yakiv.Config(steps)
     def config = configLoader.mergeConfig(userConfig)
 
-    // ========== 修改点1：在流水线开始前预加载版本列表 ==========
     echo "✅ 开始执行 main pipeline - 分支: ${env.BRANCH_NAME}"
-
-    // 预加载版本列表用于参数验证
-//    def availableVersions = []
-//    if (config.buildMode == 'deploy-only') {
-//        try {
-//            def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
-//            if (dbTools.testConnection()) {
-//                availableVersions = dbTools.getRecentBuildVersions(config.projectName, 10)
-//                echo "✅ 预加载了 ${availableVersions.size()} 个可用版本"
-//            } else {
-//                echo "⚠️ 数据库连接失败，无法预加载版本列表"
-//            }
-//        } catch (Exception e) {
-//            echo "⚠️ 预加载版本列表失败: ${e.message}"
-//        }
-//    }
 
     pipeline {
         agent {
@@ -403,6 +386,29 @@ def call(Map userConfig = [:]) {
                     }
                 }
             }
+
+            // ========== 新增阶段：自动回滚 ==========
+            stage('Auto Rollback') {
+                when {
+                    // 这个阶段只在部署失败且有回滚发生时显示
+                    expression {
+                        env.AUTO_ROLLBACK_TRIGGERED == 'true'
+                    }
+                }
+                steps {
+                    script {
+                        echo "🔄 自动回滚已触发"
+                        echo "回滚详情:"
+                        echo "  - 项目: ${env.PROJECT_NAME}"
+                        echo "  - 环境: ${env.DEPLOY_ENV}"
+                        echo "  - 回滚到版本: ${env.ROLLBACK_VERSION}"
+                        echo "  - 原失败版本: ${env.APP_VERSION}"
+
+                        // 这里可以添加回滚后的验证步骤
+                        echo "✅ 自动回滚流程已完成"
+                    }
+                }
+            }
         }
 
         post {
@@ -421,6 +427,13 @@ def call(Map userConfig = [:]) {
                         pipelineType = 'DEPLOY_ONLY'
                     }
 
+                    // === 修改点：如果发生了自动回滚，在通知中特别说明 ===
+                    def additionalInfo = ""
+                    if (env.AUTO_ROLLBACK_TRIGGERED == 'true') {
+                        pipelineType = 'ROLLBACK'
+                        additionalInfo = " (包含自动回滚到版本: ${env.ROLLBACK_VERSION})"
+                    }
+
                     notificationTools.sendPipelineNotification(
                             project: env.PROJECT_NAME,
                             environment: env.DEPLOY_ENV,
@@ -429,7 +442,8 @@ def call(Map userConfig = [:]) {
                             recipients: env.EMAIL_RECIPIENTS,
                             buildUrl: env.BUILD_URL,
                             pipelineType: pipelineType,
-                            attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null)
+                            attachLog: (currentBuild.result != 'SUCCESS' && currentBuild.result != null),
+                            additionalInfo: additionalInfo
                     )
 
                     // === 修改点：添加部署历史查询 ===
