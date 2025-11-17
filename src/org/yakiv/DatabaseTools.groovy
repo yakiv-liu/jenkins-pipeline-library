@@ -566,7 +566,7 @@ class DatabaseTools implements Serializable {
             def query = """
                 SELECT version, deploy_time, git_commit, build_url
                 FROM deployment_records
-                WHERE project_name = ? AND environment = ? AND status = 'SUCCESS' AND version != ?
+                WHERE project_name = ? AND environment = ? AND status in ('SUCCESS', 'ROLLBACK_SUCCESS') AND version != ?
                 ORDER BY deploy_time DESC
                 LIMIT 1
             """
