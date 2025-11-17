@@ -386,20 +386,18 @@ def call(Map userConfig = [:]) {
                         def rollbackTriggered = false
 
                         try {
-                            deployTools.deployToEnvironmentWithAutoRollback(deployConfig)
-                            deploymentSuccess = true
+                            deploymentSuccess = deployTools.deployToEnvironmentWithAutoRollback(deployConfig)
+//                            deploymentSuccess = true
+                            if (!deploymentSuccess && env.AUTO_ROLLBACK_TRIGGERED == 'true'){
+                                rollbackTriggered = true
+//                                steps.echo "🔄 自动回滚已触发，构建标记为不稳定"
+                                steps.echo "❌ 部署失败，但可能已触发自动回滚"
+                            }
                             steps.echo "✅ 部署流程完成"
                         } catch (Exception e) {
-                            steps.echo "❌ 部署失败，但可能已触发自动回滚"
-                            // 检查是否触发了自动回滚
-                            if (env.AUTO_ROLLBACK_TRIGGERED == 'true') {
-                                rollbackTriggered = true
-                                steps.echo "🔄 自动回滚已触发，构建标记为不稳定"
-//                                currentBuild.result = 'UNSTABLE'
-                            } else {
-                                // 没有自动回滚，真正失败
-                                throw e
-                            }
+                            // 没有自动回滚，真正失败
+                            throw e
+
                         }
 
                         // ========== 设置环境变量，控制 Auto Rollback 阶段显示 ==========
