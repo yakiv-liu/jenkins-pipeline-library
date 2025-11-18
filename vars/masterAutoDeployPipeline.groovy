@@ -127,6 +127,33 @@ def call(Map userConfig = [:]) {
                                         version: env.APP_VERSION,
                                         harborUrl: env.HARBOR_URL
                                 )
+                                echo "📝 记录构建信息到数据库..."
+                                try {
+                                    def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
+                                    if (dbTools.testConnection()) {
+                                        dbTools.recordBuild([
+                                                projectName: env.PROJECT_NAME,
+                                                version: env.APP_VERSION,
+                                                gitCommit: env.GIT_COMMIT,
+                                                gitBranch: env.PROJECT_BRANCH,
+                                                buildTimestamp: new Date(),
+                                                buildStatus: 'SUCCESS',
+                                                dockerImage: "${env.HARBOR_URL}/${env.PROJECT_NAME}:${env.APP_VERSION}",
+                                                jenkinsBuildUrl: env.BUILD_URL,
+                                                jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
+                                                metadata: [
+                                                        buildMode: env.BUILD_MODE,
+                                                        skipDependencyCheck: env.SKIP_DEPENDENCY_CHECK,
+                                                        buildAgent: env.NODE_NAME
+                                                ]
+                                        ])
+                                        echo "✅ 构建记录已保存到数据库: ${env.APP_VERSION}"
+                                    } else {
+                                        echo "⚠️ 数据库连接失败，跳过记录构建信息"
+                                    }
+                                } catch (Exception e) {
+                                    echo "❌ 记录构建信息失败: ${e.message}"
+                                }
                             }
                         }
                     }
