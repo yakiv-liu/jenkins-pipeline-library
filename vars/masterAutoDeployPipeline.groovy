@@ -201,7 +201,7 @@ def call(Map userConfig = [:]) {
                                     echo "🚀 开始部署到 ${environment} 环境"
                                     env.DEPLOY_ENV = environment
 
-                                    def deployTools = new org.yakiv.DeployTools(steps, env)
+                                    def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
                                     deployTools.deployToEnvironment(
                                             projectName: env.PROJECT_NAME,
                                             environment: environment,
