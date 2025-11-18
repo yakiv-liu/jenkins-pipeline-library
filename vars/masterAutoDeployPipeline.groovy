@@ -229,8 +229,8 @@ def call(Map userConfig = [:]) {
                                             autoRollback: dbTestResult  // 只有数据库连接成功时才启用自动回滚
                                     ]
 
-                                    def deploymentSuccess = false
-                                    def rollbackTriggered = false
+//                                    def deploymentSuccess = false
+//                                    def rollbackTriggered = false
 
                                     try {
                                         deploymentSuccess = deployTools.deployToEnvironmentWithAutoRollback(deployConfig)

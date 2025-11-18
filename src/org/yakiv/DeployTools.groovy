@@ -124,16 +124,17 @@ class DeployTools implements Serializable {
 
                 // ========== 关键修改：设置环境变量但不抛出异常 ==========
                 env.AUTO_ROLLBACK_TRIGGERED = 'true'
-
+                steps.echo "The AUTO_ROLLBACK_TRIGGERED value is ${env.AUTO_ROLLBACK_TRIGGERED}"
                 def rollbackSuccess = executeAutoRollback(config)
 
                 if (rollbackSuccess) {
                     steps.echo "✅ 自动回滚成功完成"
                     // 记录自动回滚成功
-                    recordAutoRollbackSuccess(config)
+//                    recordAutoRollbackSuccess(config)
+                    steps.echo "🔄 自动回滚执行成功"
 
                     // ========== 修改：返回特殊标志而不是抛出异常 ==========
-                    steps.echo "⚠️ 部署失败但自动回滚成功 - 构建将继续但标记为不稳定"
+//                    steps.echo "⚠️ 部署失败但自动回滚成功 - 构建将继续但标记为不稳定"
                     return false  // 返回 false 表示部署失败但回滚成功
                 } else {
                     steps.echo "❌ 自动回滚失败"
@@ -359,10 +360,10 @@ class DeployTools implements Serializable {
     /**
      * 记录自动回滚成功
      */
-    private def recordAutoRollbackSuccess(Map config) {
-        steps.echo "🔄 自动回滚执行成功"
-        // 可以在数据库中标记回滚成功，或者保持部署失败状态
-    }
+//    private def recordAutoRollbackSuccess(Map config) {
+//        steps.echo "🔄 自动回滚执行成功"
+//        // 可以在数据库中标记回滚成功，或者保持部署失败状态
+//    }
 
     // ========== 修改点3：添加构建版本验证方法 ==========
     /**
