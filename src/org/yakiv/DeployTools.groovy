@@ -130,11 +130,9 @@ class DeployTools implements Serializable {
                 if (rollbackSuccess) {
                     steps.echo "✅ 自动回滚成功完成"
                     // 记录自动回滚成功
-//                    recordAutoRollbackSuccess(config)
                     steps.echo "🔄 自动回滚执行成功"
 
                     // ========== 修改：返回特殊标志而不是抛出异常 ==========
-//                    steps.echo "⚠️ 部署失败但自动回滚成功 - 构建将继续但标记为不稳定"
                     return false  // 返回 false 表示部署失败但回滚成功
                 } else {
                     steps.echo "❌ 自动回滚失败"
@@ -151,6 +149,223 @@ class DeployTools implements Serializable {
         }
     }
 
+    // ========== 修改点10：新增方法，通过返回值传递状态 ==========
+    /**
+     * 增强的部署方法 - 包含自动回滚功能，并通过返回值传递状态
+     */
+    def deployToEnvironmentWithAutoRollbackAndStatus(Map config) {
+        def startTime = System.currentTimeMillis()
+        def result = [
+                success: false,
+                rollbackTriggered: false,
+                rollbackVersion: null
+        ]
+
+        try {
+            steps.echo "🚀 开始部署流程"
+            steps.echo "项目: ${config.projectName}"
+            steps.echo "环境: ${config.environment}"
+            steps.echo "版本: ${config.version}"
+            steps.echo "构建: ${env.BUILD_URL}"
+
+            // 记录部署元数据到数据库
+            recordDeploymentMetadata(config, startTime, 'IN_PROGRESS')
+
+            // 执行部署
+            deployToEnvironment(config)
+
+            def duration = (System.currentTimeMillis() - startTime) / 1000
+            steps.echo "✅ 部署成功完成 - 耗时: ${duration}秒"
+
+            // 更新数据库状态
+            updateDeploymentStatus(config, 'SUCCESS', null, duration as Long)
+
+            result.success = true
+            return result
+
+        } catch (Exception deployError) {
+            def duration = (System.currentTimeMillis() - startTime) / 1000
+            steps.echo "❌ 部署失败: ${deployError.message}"
+            steps.echo "⏱️ 部署耗时: ${duration}秒"
+
+            // 记录详细的错误信息到 Jenkins 日志
+            steps.echo "🔍 错误详情:"
+            steps.echo deployError.message
+
+            // 更新数据库状态
+            updateDeploymentStatus(config, 'FAILED', deployError.message, duration as Long)
+
+            // 自动回滚逻辑
+            def autoRollbackEnabled = config.autoRollback != false
+
+            if (autoRollbackEnabled && dbTools.testConnection()) {
+                steps.echo "🚨 部署失败，开始自动回滚..."
+
+                def rollbackResult = executeAutoRollbackWithStatus(config)
+                result.rollbackTriggered = rollbackResult.rollbackTriggered
+                result.rollbackVersion = rollbackResult.rollbackVersion
+
+                if (rollbackResult.success) {
+                    steps.echo "✅ 自动回滚成功完成"
+                    // 返回部署失败但回滚成功的结果
+                    result.success = false
+                    return result
+                } else {
+                    steps.echo "❌ 自动回滚失败"
+                    throw deployError  // 回滚也失败，真正抛出异常
+                }
+            } else {
+                if (!autoRollbackEnabled) {
+                    steps.echo "⚠️ 自动回滚未启用，跳过回滚"
+                } else {
+                    steps.echo "⚠️ 数据库连接失败，无法执行自动回滚"
+                }
+                throw deployError
+            }
+        }
+    }
+
+    // ========== 修改点11：新增方法，执行回滚并返回状态 ==========
+    /**
+     * 执行自动回滚并返回状态
+     */
+    def executeAutoRollbackWithStatus(Map config) {
+        def result = [
+                success: false,
+                rollbackTriggered: true,
+                rollbackVersion: null
+        ]
+
+        steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+            steps.echo "🔄 开始自动回滚流程..."
+            steps.echo "=== 自动回滚详细信息 ==="
+            steps.echo "项目: ${config.projectName}"
+            steps.echo "环境: ${config.environment}"
+            steps.echo "失败版本: ${config.version}"
+            steps.echo "开始时间: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+
+            // 获取上一个成功版本
+            def previousVersion = null
+            if (dbTools.testConnection()) {
+                previousVersion = dbTools.getPreviousSuccessfulVersion(
+                        config.projectName,
+                        config.environment,
+                        config.version
+                )
+            }
+
+            if (!previousVersion) {
+                steps.echo "❌ 自动回滚失败：没有找到可用的上一个成功版本"
+                result.rollbackVersion = 'NONE_AVAILABLE'
+                return result
+            }
+
+            def rollbackVersion = previousVersion.version
+            steps.echo "🎯 找到可回滚版本: ${rollbackVersion}"
+            steps.echo "构建时间: ${new Date(previousVersion.deploy_time.time).format('yyyy-MM-dd HH:mm:ss')}"
+            steps.echo "Git Commit: ${previousVersion.git_commit}"
+
+            result.rollbackVersion = rollbackVersion
+
+            prepareAnsibleEnvironment(config.environment, config)
+
+            def extraVars = [
+                    project_name: config.projectName,
+                    rollback_version: rollbackVersion,
+                    deploy_env: config.environment,
+                    harbor_url: config.harborUrl,
+                    app_port: config.appPort,
+                    app_dir: getAppDir(config.environment),
+                    backup_dir: config.backupDir ?: '/opt/backups'
+            ]
+
+            try {
+                steps.echo "🚀 执行 Ansible 回滚 Playbook..."
+                steps.ansiblePlaybook(
+                        playbook: 'ansible-playbooks/rollback.yml',
+                        inventory: "inventory/${config.environment}",
+                        extraVars: extraVars,
+                        credentialsId: 'ansible-ssh-key',
+                        disableHostKeyChecking: true
+                )
+
+                steps.echo "✅ Ansible 回滚执行完成"
+
+                // 记录自动回滚信息
+                if (dbTools.testConnection()) {
+                    steps.echo "📝 记录自动回滚信息到数据库..."
+                    try {
+                        dbTools.recordRollback([
+                                projectName: config.projectName,
+                                environment: config.environment,
+                                rollbackVersion: rollbackVersion,
+                                currentVersion: config.version,
+                                buildUrl: env.BUILD_URL,
+                                jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
+                                jenkinsJobName: env.JOB_NAME,
+                                rollbackUser: 'auto-rollback-system',
+                                reason: "Automatic rollback due to deployment failure",
+                                status: 'SUCCESS',
+                                metadata: [
+                                        originalDeployTime: new Date(),
+                                        rollbackTrigger: 'auto',
+                                        deploymentError: "Deployment failed for version ${config.version}"
+                                ]
+                        ])
+                        steps.echo "✅ 自动回滚记录已保存到数据库"
+                    } catch (Exception e) {
+                        steps.echo "⚠️ 自动回滚记录保存失败: ${e.message}"
+                    }
+                }
+
+                steps.echo "🎉 自动回滚完成: ${config.projectName} ${config.environment} -> ${rollbackVersion}"
+
+                // 回滚后健康检查
+                steps.echo "🔍 执行回滚后健康检查..."
+                try {
+                    enhancedHealthCheck(config)
+                    steps.echo "✅ 回滚后健康检查通过"
+                } catch (Exception e) {
+                    steps.echo "⚠️ 回滚后健康检查失败，但回滚流程已完成: ${e.message}"
+                }
+
+                result.success = true
+                return result
+
+            } catch (Exception e) {
+                steps.echo "❌ 自动回滚执行失败: ${e.message}"
+                steps.echo "详细错误信息: ${e.stackTrace.take(10).join('\n')}"
+
+                // 记录自动回滚失败
+                if (dbTools.testConnection()) {
+                    try {
+                        dbTools.recordRollback([
+                                projectName: config.projectName,
+                                environment: config.environment,
+                                rollbackVersion: rollbackVersion,
+                                currentVersion: config.version,
+                                buildUrl: env.BUILD_URL,
+                                jenkinsBuildNumber: env.BUILD_NUMBER?.toInteger(),
+                                jenkinsJobName: env.JOB_NAME,
+                                rollbackUser: 'auto-rollback-system',
+                                reason: "Automatic rollback failed: ${e.message}",
+                                status: 'FAILED',
+                                metadata: [
+                                        errorDetails: e.message,
+                                        stackTrace: e.stackTrace.take(5).join('; ')
+                                ]
+                        ])
+                        steps.echo "⚠️ 自动回滚失败记录已保存"
+                    } catch (Exception ex) {
+                        steps.echo "⚠️ 自动回滚失败记录保存失败: ${ex.message}"
+                    }
+                }
+
+                return result
+            }
+        }
+    }
+
     /**
      * 执行自动回滚（当部署失败时）
      */
@@ -163,7 +378,7 @@ class DeployTools implements Serializable {
             steps.echo "失败版本: ${config.version}"
             steps.echo "开始时间: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
 
-            // === 修改点：获取上一个成功版本 ===
+            // 获取上一个成功版本
             def previousVersion = null
             if (dbTools.testConnection()) {
                 previousVersion = dbTools.getPreviousSuccessfulVersion(
@@ -184,7 +399,7 @@ class DeployTools implements Serializable {
             steps.echo "构建时间: ${new Date(previousVersion.deploy_time.time).format('yyyy-MM-dd HH:mm:ss')}"
             steps.echo "Git Commit: ${previousVersion.git_commit}"
 
-            // ========== 新增：设置回滚版本环境变量 ==========
+            // 设置回滚版本环境变量
             env.ROLLBACK_VERSION = rollbackVersion
 
             prepareAnsibleEnvironment(config.environment, config)
@@ -240,7 +455,7 @@ class DeployTools implements Serializable {
 
                 steps.echo "🎉 自动回滚完成: ${config.projectName} ${config.environment} -> ${rollbackVersion}"
 
-                // ========== 新增：回滚后健康检查 ==========
+                // 回滚后健康检查
                 steps.echo "🔍 执行回滚后健康检查..."
                 try {
                     enhancedHealthCheck(config)
@@ -285,9 +500,6 @@ class DeployTools implements Serializable {
         }
     }
 
-    /**
-     * 记录部署元数据到数据库
-     */
     /**
      * 记录部署元数据到数据库
      */
@@ -356,14 +568,6 @@ class DeployTools implements Serializable {
             steps.echo "❌ 更新部署状态失败: ${e.message}"
         }
     }
-
-    /**
-     * 记录自动回滚成功
-     */
-//    private def recordAutoRollbackSuccess(Map config) {
-//        steps.echo "🔄 自动回滚执行成功"
-//        // 可以在数据库中标记回滚成功，或者保持部署失败状态
-//    }
 
     // ========== 修改点3：添加构建版本验证方法 ==========
     /**

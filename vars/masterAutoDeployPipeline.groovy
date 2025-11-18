@@ -37,10 +37,6 @@ def call(Map userConfig = [:]) {
 
             // 定义顺序部署的环境列表
             DEPLOYMENT_ENVIRONMENTS = "staging,pre-prod"
-
-            // ========== 修改点1：添加自动回滚相关环境变量 ==========
-            AUTO_ROLLBACK_TRIGGERED = 'false'
-            ROLLBACK_VERSION = ''
         }
 
         stages {
@@ -194,7 +190,7 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点2：重构部署阶段，确保失败后立即停止 ==========
+            // ========== 修改点1：重构部署阶段，使用返回值判断回滚状态 ==========
             stage('Sequential Deployment') {
                 steps {
                     script {
@@ -218,7 +214,7 @@ def call(Map userConfig = [:]) {
                                         steps.echo "✅ 数据库连接成功，自动回滚功能已启用"
                                     }
 
-                                    // ========== 修改点3：使用带自动回滚的部署方法 ==========
+                                    // ========== 修改点2：使用新的部署方法，获取返回值 ==========
                                     def deployConfig = [
                                             projectName: env.PROJECT_NAME,
                                             environment: environment,
@@ -229,93 +225,78 @@ def call(Map userConfig = [:]) {
                                             autoRollback: dbTestResult  // 只有数据库连接成功时才启用自动回滚
                                     ]
 
-//                                    def deploymentSuccess = false
-//                                    def rollbackTriggered = false
+                                    // ========== 修改点3：调用新的部署方法并获取返回值 ==========
+                                    def deploymentResult = deployTools.deployToEnvironmentWithAutoRollbackAndStatus(deployConfig)
+                                    def deploymentSuccess = deploymentResult.success
+                                    def rollbackTriggered = deploymentResult.rollbackTriggered
+                                    def rollbackVersion = deploymentResult.rollbackVersion
 
-                                    try {
-                                        deploymentSuccess = deployTools.deployToEnvironmentWithAutoRollback(deployConfig)
+                                    if (rollbackTriggered) {
+                                        // ========== 修改点4：在pipeline中设置环境变量 ==========
+                                        env.AUTO_ROLLBACK_TRIGGERED = 'true'
+                                        env.ROLLBACK_VERSION = rollbackVersion
 
-                                        if (!deploymentSuccess && env.AUTO_ROLLBACK_TRIGGERED == 'true') {
-                                            rollbackTriggered = true
-                                            steps.echo "❌ ${environment} 环境部署失败并已触发自动回滚"
+                                        steps.echo "❌ ${environment} 环境部署失败并已触发自动回滚"
+                                        steps.echo "回滚版本: ${rollbackVersion}"
 
-                                            // ========== 修改点4：标记构建结果为失败 ==========
-                                            currentBuild.result = 'FAILURE'
-
-                                            // ========== 修改点5：记录回滚摘要信息 ==========
-                                            echo "🔄 自动回滚摘要"
-                                            echo "=== 回滚详情 ==="
-                                            echo "项目: ${env.PROJECT_NAME}"
-                                            echo "环境: ${environment}"
-                                            echo "回滚到版本: ${env.ROLLBACK_VERSION}"
-                                            echo "原失败版本: ${env.APP_VERSION}"
-                                            echo "回滚时间: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
-                                            echo "构建链接: ${env.BUILD_URL}"
-
-                                            // 在数据库中记录回滚完成状态
-                                            try {
-                                                def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
-                                                if (dbTools.testConnection()) {
-                                                    dbTools.updateDeploymentStatus([
-                                                            projectName: env.PROJECT_NAME,
-                                                            environment: environment,
-                                                            version: env.ROLLBACK_VERSION,
-                                                            status: 'ROLLBACK_SUCCESS',
-                                                            errorSummary: "自动回滚完成: ${env.APP_VERSION} -> ${env.ROLLBACK_VERSION}",
-                                                            deploymentDuration: 0
-                                                    ])
-                                                    echo "✅ 回滚状态已记录到数据库"
-                                                }
-                                            } catch (Exception e) {
-                                                echo "⚠️ 记录回滚状态失败: ${e.message}"
-                                            }
-
-                                            // 记录部署失败信息
-                                            try {
-                                                def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-                                                steps.sh """
-                                                    mkdir -p ${env.BACKUP_DIR}
-                                                    echo "FAILED:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL},ROLLBACK_TO:${env.ROLLBACK_VERSION}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
-                                                """
-                                            } catch (Exception e) {
-                                                echo "警告：部署失败记录保存失败: ${e.getMessage()}"
-                                            }
-
-                                            // ========== 修改点6：关键修改 - 立即失败并跳过后续环境 ==========
-                                            error "${environment} 环境部署失败并已自动回滚，跳过后续环境部署"
-                                        }
-
-                                        if (deploymentSuccess) {
-                                            steps.echo "✅ 成功部署到 ${environment} 环境"
-                                            // 记录部署成功信息
-                                            try {
-                                                def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
-                                                steps.sh """
-                                                    mkdir -p ${env.BACKUP_DIR}
-                                                    echo "SUCCESS:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
-                                                """
-                                            } catch (Exception e) {
-                                                echo "警告：部署记录保存失败: ${e.getMessage()}"
-                                            }
-                                        }
-                                    } catch (Exception e) {
-                                        // 没有自动回滚，真正失败
-                                        steps.echo "❌ ${environment} 环境部署失败且无法自动回滚"
+                                        // ========== 修改点5：标记构建结果为失败 ==========
                                         currentBuild.result = 'FAILURE'
+
+                                        // ========== 修改点6：记录回滚摘要信息 ==========
+                                        echo "🔄 自动回滚摘要"
+                                        echo "=== 回滚详情 ==="
+                                        echo "项目: ${env.PROJECT_NAME}"
+                                        echo "环境: ${environment}"
+                                        echo "回滚到版本: ${env.ROLLBACK_VERSION}"
+                                        echo "原失败版本: ${env.APP_VERSION}"
+                                        echo "回滚时间: ${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+                                        echo "构建链接: ${env.BUILD_URL}"
+
+                                        // 在数据库中记录回滚完成状态
+                                        try {
+                                            def dbTools = new org.yakiv.DatabaseTools(steps, env, configLoader)
+                                            if (dbTools.testConnection()) {
+                                                dbTools.updateDeploymentStatus([
+                                                        projectName: env.PROJECT_NAME,
+                                                        environment: environment,
+                                                        version: env.ROLLBACK_VERSION,
+                                                        status: 'ROLLBACK_SUCCESS',
+                                                        errorSummary: "自动回滚完成: ${env.APP_VERSION} -> ${env.ROLLBACK_VERSION}",
+                                                        deploymentDuration: 0
+                                                ])
+                                                echo "✅ 回滚状态已记录到数据库"
+                                            }
+                                        } catch (Exception e) {
+                                            echo "⚠️ 记录回滚状态失败: ${e.message}"
+                                        }
 
                                         // 记录部署失败信息
                                         try {
                                             def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
                                             steps.sh """
                                                 mkdir -p ${env.BACKUP_DIR}
-                                                echo "FAILED:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL},NO_ROLLBACK" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
+                                                echo "FAILED:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL},ROLLBACK_TO:${env.ROLLBACK_VERSION}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
                                             """
-                                        } catch (Exception logEx) {
-                                            echo "警告：部署失败记录保存失败: ${logEx.getMessage()}"
+                                        } catch (Exception e) {
+                                            echo "警告：部署失败记录保存失败: ${e.getMessage()}"
                                         }
 
                                         // ========== 修改点7：关键修改 - 立即失败并跳过后续环境 ==========
-                                        error "${environment} 环境部署失败且无法自动回滚，跳过后续环境部署"
+                                        error "${environment} 环境部署失败并已自动回滚，跳过后续环境部署"
+                                    }
+
+                                    if (deploymentSuccess) {
+                                        steps.echo "✅ 成功部署到 ${environment} 环境"
+                                        // 记录部署成功信息
+                                        try {
+                                            def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                                            steps.sh """
+                                                mkdir -p ${env.BACKUP_DIR}
+                                                echo "SUCCESS:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL}" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
+                                            """
+                                        } catch (Exception e) {
+                                            echo "警告：部署记录保存失败: ${e.getMessage()}"
+                                        }
                                     }
                                 }
                             }
