@@ -52,7 +52,7 @@ def call(Map userConfig = [:]) {
 
                         echo "依赖检查配置: ${env.SKIP_DEPENDENCY_CHECK == 'true' ? '跳过' : '执行'}"
 
-                        currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-MASTER-AUTO"
+                        currentBuild.displayName = "${env.PROJECT_NAME}-${env.APP_VERSION}-${env.PROJECT_BRANCH }-AUTO"
 
                         // 显示配置信息
                         echo "项目: ${env.PROJECT_NAME}"
