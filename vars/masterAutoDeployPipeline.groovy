@@ -194,19 +194,14 @@ def call(Map userConfig = [:]) {
                 }
             }
 
-            // ========== 修改点2：重构部署阶段，支持自动回滚 ==========
+            // ========== 修改点2：重构部署阶段，确保失败后立即停止 ==========
             stage('Sequential Deployment') {
                 steps {
                     script {
                         def environments = env.DEPLOYMENT_ENVIRONMENTS.split(',').collect { it.trim() }
-                        def deploymentFailed = false
-                        def failedEnvironment = ''
 
-                        for (environment in environments) {
-                            if (deploymentFailed) {
-                                echo "⏹️ 由于 ${failedEnvironment} 环境部署失败，跳过 ${environment} 环境的部署"
-                                continue
-                            }
+                        for (int i = 0; i < environments.size(); i++) {
+                            def environment = environments[i]
 
                             stage("Deploy to ${environment.toUpperCase()}") {
                                 script {
@@ -242,8 +237,6 @@ def call(Map userConfig = [:]) {
 
                                         if (!deploymentSuccess && env.AUTO_ROLLBACK_TRIGGERED == 'true') {
                                             rollbackTriggered = true
-                                            deploymentFailed = true
-                                            failedEnvironment = environment
                                             steps.echo "❌ ${environment} 环境部署失败并已触发自动回滚"
 
                                             // ========== 修改点4：标记构建结果为失败 ==========
@@ -287,6 +280,9 @@ def call(Map userConfig = [:]) {
                                             } catch (Exception e) {
                                                 echo "警告：部署失败记录保存失败: ${e.getMessage()}"
                                             }
+
+                                            // ========== 修改点6：关键修改 - 立即失败并跳过后续环境 ==========
+                                            error "${environment} 环境部署失败并已自动回滚，跳过后续环境部署"
                                         }
 
                                         if (deploymentSuccess) {
@@ -304,19 +300,32 @@ def call(Map userConfig = [:]) {
                                         }
                                     } catch (Exception e) {
                                         // 没有自动回滚，真正失败
-                                        deploymentFailed = true
-                                        failedEnvironment = environment
                                         steps.echo "❌ ${environment} 环境部署失败且无法自动回滚"
                                         currentBuild.result = 'FAILURE'
-                                        throw e
+
+                                        // 记录部署失败信息
+                                        try {
+                                            def deployTime = new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")
+                                            steps.sh """
+                                                mkdir -p ${env.BACKUP_DIR}
+                                                echo "FAILED:${env.APP_VERSION},${env.GIT_COMMIT},${deployTime},${environment},${env.BUILD_URL},NO_ROLLBACK" >> "${env.BACKUP_DIR}/${env.PROJECT_NAME}-deployments.log"
+                                            """
+                                        } catch (Exception logEx) {
+                                            echo "警告：部署失败记录保存失败: ${logEx.getMessage()}"
+                                        }
+
+                                        // ========== 修改点7：关键修改 - 立即失败并跳过后续环境 ==========
+                                        error "${environment} 环境部署失败且无法自动回滚，跳过后续环境部署"
                                     }
                                 }
                             }
-                        }
 
-                        // ========== 修改点6：如果有环境部署失败，则标记整个pipeline失败 ==========
-                        if (deploymentFailed) {
-                            error "${failedEnvironment} 环境部署失败，pipeline执行终止"
+                            // ========== 修改点8：检查是否有未处理的失败，确保不会继续部署 ==========
+                            if (currentBuild.result == 'FAILURE') {
+                                echo "⏹️ 由于 ${environment} 环境部署失败，跳过剩余环境的部署"
+                                // 跳过剩余环境
+                                break
+                            }
                         }
                     }
                 }
@@ -335,7 +344,7 @@ def call(Map userConfig = [:]) {
                         pipelineType = 'FAILED'
                     }
 
-                    // ========== 修改点7：在通知中添加回滚信息 ==========
+                    // ========== 修改点9：在通知中添加回滚信息 ==========
                     def additionalInfo = ""
                     if (env.AUTO_ROLLBACK_TRIGGERED == 'true') {
                         pipelineType = 'ROLLBACK'
