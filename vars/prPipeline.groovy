@@ -147,6 +147,7 @@ def call(Map userConfig = [:]) {
 
         if (isPR && prNumber) {
             // ========== 修改点3：生成详细的检查结果表格 ==========
+            echo "security scan securityResults value is ${securityResults}"
             def commentBody = generatePRCommentBody(securityResults, config)
             postGitHubComment(prNumber, commentBody, config)
         }
