@@ -50,6 +50,9 @@ def call(Map userConfig = [:]) {
     env.TARGET_BRANCH = "${targetBranch}"
     env.SONARQUBE_COMMUNITY_EDITION = "true"
 
+    // ========== 新增：安全检查结果收集 ==========
+    def securityResults = [:]
+
     try {
         // ========== 执行各个阶段 ==========
 
@@ -57,7 +60,9 @@ def call(Map userConfig = [:]) {
         stage('Security Scan') {
             echo "🔍 开始安全扫描..."
             def securityTools = new org.yakiv.SecurityTools(steps, env)
-            securityTools.runPRSecurityScan(
+
+            // ========== 修改点1：收集安全扫描结果 ==========
+            securityResults = securityTools.runPRSecurityScan(
                     projectName: config.projectName,
                     isPR: isPR,
                     prNumber: prNumber,
@@ -93,7 +98,10 @@ def call(Map userConfig = [:]) {
         stage('Build & Test') {
             echo "🔨 开始构建和测试..."
             def buildTools = new org.yakiv.BuildTools(steps, env)
-            buildTools.runPRBuildAndTest()
+
+            // ========== 修改点2：收集构建测试结果 ==========
+            def buildResults = buildTools.runPRBuildAndTest()
+            securityResults.putAll(buildResults)
 
             // 发布测试报告
             junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
@@ -138,25 +146,8 @@ def call(Map userConfig = [:]) {
         echo "✅ PR Pipeline 执行成功"
 
         if (isPR && prNumber) {
-            def qualityTools = "Checkstyle, SpotBugs, JaCoCo, PMD"
-            def commentBody = """✅ PR验证通过！所有检查均成功完成。
-
-📊 **构建详情**: ${env.BUILD_URL}
-
-### 检查结果:
-- ✅ 安全扫描通过 (${env.SCAN_INTENSITY}模式)
-- ✅ 构建测试通过  
-- ✅ 免费工具质量检查通过 (${qualityTools})
-- ⚡ 依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
-
-### 质量报告:
-- 🔍 代码风格: ${env.BUILD_URL}code-quality/
-- 🐛 缺陷检测: ${env.BUILD_URL}code-quality/ 
-- 📈 测试覆盖率: ${env.BUILD_URL}code-quality/
-- 🛠️ 代码质量: ${env.BUILD_URL}code-quality/
-
-**注意**: 使用免费工具进行代码质量分析，如需更高级功能请升级 SonarQube 版本。"""
-
+            // ========== 修改点3：生成详细的检查结果表格 ==========
+            def commentBody = generatePRCommentBody(securityResults, config)
             postGitHubComment(prNumber, commentBody, config)
         }
 
@@ -165,12 +156,10 @@ def call(Map userConfig = [:]) {
         echo "❌ PR Pipeline 执行失败: ${e.message}"
 
         if (isPR && prNumber) {
-            def failureComment = """❌ PR验证失败！请检查以下问题：
-
-📊 **构建详情**: ${env.BUILD_URL}
-
-请查看构建日志和安全扫描报告，修复问题后重新触发构建。"""
-
+            // ========== 修改点4：失败时也生成检查结果表格 ==========
+            securityResults.buildStatus = "FAILED"
+            securityResults.overallStatus = "❌ 失败"
+            def failureComment = generatePRCommentBody(securityResults, config)
             postGitHubComment(prNumber, failureComment, config)
         }
 
@@ -179,6 +168,90 @@ def call(Map userConfig = [:]) {
         // ========== 清理工作 ==========
         cleanWs()
         echo "PR Pipeline 执行完成 - 结果: ${currentBuild.result}"
+    }
+}
+
+// ========== 新增方法：生成PR评论内容，包含详细检查表格 ==========
+def generatePRCommentBody(Map results, Map config) {
+    def statusIcon = results.overallStatus ?: "✅"
+    def buildStatus = results.buildStatus ?: "SUCCESS"
+
+    def tableRows = ""
+
+    // 定义检查项目和对应的结果键值
+    def checkItems = [
+            [name: "构建状态", key: "buildStatus", format: { it == "SUCCESS" ? "✅ 通过" : "❌ 失败" }],
+            [name: "单元测试通过率", key: "testSuccessRate", format: { it ? "${it}%" : "N/A" }],
+            [name: "代码覆盖率", key: "codeCoverage", format: { it ? "${it}%" : "N/A" }],
+            [name: "Checkstyle违规", key: "checkstyleViolations", format: { it ?: "0" }],
+            [name: "SpotBugs问题", key: "spotbugsIssues", format: { it ?: "0" }],
+            [name: "PMD问题", key: "pmdIssues", format: { it ?: "0" }],
+            [name: "依赖检查", key: "dependencyCheckStatus", format: {
+                if (it == "PASSED") "✅ 通过"
+                else if (it == "FAILED") "❌ 存在漏洞"
+                else if (it == "SKIPPED") "⚪ 已跳过"
+                else "N/A"
+            }],
+            [name: "Trivy扫描", key: "trivyScanStatus", format: {
+                if (it == "PASSED") "✅ 通过"
+                else if (it == "FAILED") "❌ 存在漏洞"
+                else if (it == "SKIPPED") "⚪ 已跳过"
+                else "N/A"
+            }],
+            [name: "扫描强度", key: "scanIntensity", format: { it ?: "standard" }]
+    ]
+
+    // 生成表格行
+    checkItems.each { item ->
+        def value = results[item.key]
+        def formattedValue = item.format(value)
+        def status = getItemStatus(item.key, value)
+
+        tableRows += "| ${item.name} | ${formattedValue} | ${status} |\n"
+    }
+
+    return """${statusIcon} PR验证完成！详细检查结果如下：
+
+📊 **构建详情**: ${env.BUILD_URL}
+
+### 安全检查结果汇总
+
+| 检查项目 | 检查结果 | 状态 |
+|---------|---------|------|
+${tableRows}
+
+### 详细报告链接
+- 🔍 **安全扫描报告**: ${env.BUILD_URL}security-scan/
+- 🐛 **代码质量报告**: ${env.BUILD_URL}code-quality/ 
+- 📈 **测试覆盖率报告**: ${env.BUILD_URL}code-quality/
+- 🛠️ **构建测试报告**: ${env.BUILD_URL}testReport/
+
+**扫描配置**: ${results.scanIntensity ?: 'standard'}模式，依赖检查: ${config.skipDependencyCheck ? '已跳过' : '已执行'}
+
+**注意**: 使用免费工具进行代码质量分析，如需更高级功能请升级 SonarQube 版本。"""
+}
+
+// ========== 新增方法：获取检查项状态 ==========
+def getItemStatus(String itemKey, value) {
+    switch(itemKey) {
+        case "buildStatus":
+            return value == "SUCCESS" ? "✅" : "❌"
+        case "testSuccessRate":
+            return (value != null && value >= 80) ? "✅" : "⚠️"
+        case "codeCoverage":
+            return (value != null && value >= 70) ? "✅" : "⚠️"
+        case "checkstyleViolations":
+            return (value != null && value == 0) ? "✅" : (value != null && value <= 10) ? "⚠️" : "❌"
+        case "spotbugsIssues":
+            return (value != null && value == 0) ? "✅" : (value != null && value <= 5) ? "⚠️" : "❌"
+        case "pmdIssues":
+            return (value != null && value == 0) ? "✅" : (value != null && value <= 5) ? "⚠️" : "❌"
+        case "dependencyCheckStatus":
+            return value == "PASSED" ? "✅" : (value == "SKIPPED" ? "⚪" : "❌")
+        case "trivyScanStatus":
+            return value == "PASSED" ? "✅" : (value == "SKIPPED" ? "⚪" : "❌")
+        default:
+            return "🔵"
     }
 }
 
