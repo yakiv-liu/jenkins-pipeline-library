@@ -69,7 +69,10 @@ class SecurityTools implements Serializable {
                                 if (attempt < maxRetries) {
                                     steps.echo "⏳ 等待 ${retryDelay} 秒后重试..."
                                     steps.sleep(retryDelay)
-                                    retryDelay = Math.min(retryDelay * 1.5, 60)
+                                    // === 修复点1：修复 Math.min() 类型转换问题 ===
+                                    // 原代码：retryDelay = Math.min(retryDelay * 1.5, 60)
+                                    // 新代码：确保两个参数都是相同类型
+                                    retryDelay = Math.min(retryDelay * 1.5d, 60d).intValue()
                                 }
                                 attempt++
                             }
