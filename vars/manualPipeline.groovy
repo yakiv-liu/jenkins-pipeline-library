@@ -14,6 +14,9 @@ def call(Map userConfig = [:]) {
             timeout(time: 60, unit: 'MINUTES')
             buildDiscarder(logRotator(daysToKeepStr: '10', numToKeepStr: '5'))
             disableConcurrentBuilds()
+            // === 关键修改：启用阶段重启支持 ===
+            durabilityHint('PERFORMANCE_OPTIMIZED')
+            parallelsAlwaysFailFast()
         }
 
         environment {
@@ -105,7 +108,6 @@ def call(Map userConfig = [:]) {
 
                         // 设置项目分支，如果没有提供则使用默认值 'main'
                         env.PROJECT_BRANCH = config.projectBranch ?: 'main'
-
                         env.DEPLOY_ENV = config.deployEnv
                         env.EMAIL_RECIPIENTS = config.defaultEmail
 
@@ -197,6 +199,14 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
+                        // === 关键修改：检查并重新加载关键变量 ===
+                        if (!env.PROJECT_NAME) {
+                            env.PROJECT_NAME = config.projectName
+                            env.PROJECT_BRANCH = config.projectBranch ?: 'main'
+                            env.DEPLOY_ENV = config.deployEnv
+                            echo "🔄 阶段重启: 重新加载环境变量"
+                        }
+
                         def buildTools = new org.yakiv.BuildTools(steps, env)
                         // ========== 修改点10：在项目目录下执行构建 ==========
                         dir(env.PROJECT_DIR) {
@@ -316,7 +326,6 @@ def call(Map userConfig = [:]) {
 
                                 // 获取质量门状态
                                 def qualityGate = waitForQualityGate()
-
                                 steps.echo "📊 质量门状态: ${qualityGate.status}"
 
                                 if (qualityGate.status == 'OK') {
@@ -348,6 +357,13 @@ def call(Map userConfig = [:]) {
                 }
                 steps {
                     script {
+                        // === 关键修改：检查并重新加载关键变量 ===
+                        if (!env.PROJECT_NAME) {
+                            env.PROJECT_NAME = config.projectName
+                            env.DEPLOY_ENV = config.deployEnv
+                            echo "🔄 阶段重启: 重新加载部署变量"
+                        }
+
                         def deployTools = new org.yakiv.DeployTools(steps, env, configLoader)
 
                         if (env.DEPLOY_ENV == 'pre-prod' || env.DEPLOY_ENV == 'prod') {
@@ -397,7 +413,6 @@ def call(Map userConfig = [:]) {
                         } catch (Exception e) {
                             // 没有自动回滚，真正失败
                             throw e
-
                         }
 
                         // ========== 设置环境变量，控制 Auto Rollback 阶段显示 ==========
