@@ -38,8 +38,19 @@ class SecurityTools implements Serializable {
                                 
                                 export MAVEN_OPTS="-Xmx512m -Xms256m -XX:+UseG1GC"
                                 
+                                # === 修复点1：添加 SonarQube 插件到 Maven 命令 ===
+                                # 首先检查项目是否有 sonar-maven-plugin
+                                echo "检查 SonarQube Maven 插件..."
+                                if mvn help:describe -Dplugin=org.sonarsource.scanner.maven:sonar-maven-plugin -Ddetail > /dev/null 2>&1; then
+                                    echo "✅ 项目已配置 SonarQube Maven 插件"
+                                    SONAR_CMD="mvn sonar:sonar"
+                                else
+                                    echo "⚠️ 项目未配置 SonarQube 插件，使用完整插件坐标"
+                                    SONAR_CMD="mvn org.sonarsource.scanner.maven:sonar-maven-plugin:4.0.0.4121:sonar"
+                                fi
+                                
                                 # SonarQube 扫描仍然保留 120 秒超时（防止卡住）
-                                timeout 120s mvn sonar:sonar \\
+                                timeout 120s \${SONAR_CMD} \\
                                 -Dsonar.host.url=${env.SONAR_URL} \\
                                 -Dsonar.login=${env.SONAR_TOKEN} \\
                                 -Dsonar.projectKey=${config.projectKey} \\
@@ -99,6 +110,92 @@ class SecurityTools implements Serializable {
         }
     }
 
+    // === 修复点3：在 runSonarQubeEnterpriseScan 方法中也修复同样的插件问题 ===
+    def runSonarQubeEnterpriseScan(String projectName, String branchName, boolean isPR, String prNumber, String targetBranch, String scanIntensity) {
+        steps.echo "运行 SonarQube 企业版扫描..."
+
+        def enterpriseResults = [:]
+
+        steps.withSonarQubeEnv('sonarqube') {
+            steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
+                    steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
+                        // 根据扫描强度调整参数
+                        def sonarExclusions = '**/test/**,**/target/**'
+                        def sonarSources = 'src/main/java'
+
+                        if (scanIntensity == 'fast') {
+                            sonarExclusions += ',**/*.md,**/*.json,**/*.xml'
+                            steps.echo "🔍 快速扫描模式：跳过文档和配置文件"
+                        } else if (scanIntensity == 'deep') {
+                            sonarSources += ',src/test/java'
+                            steps.echo "🔍 深度扫描模式：包含测试代码分析"
+                        }
+
+                        // === 修复点4：检查并选择合适的 Sonar 命令 ===
+                        def sonarCmd
+                        steps.sh """
+                            echo "检查 SonarQube Maven 插件..."
+                            if mvn help:describe -Dplugin=org.sonarsource.scanner.maven:sonar-maven-plugin -Ddetail > /dev/null 2>&1; then
+                                echo "项目已配置 SonarQube Maven 插件"
+                                echo "SONAR_CMD=mvn sonar:sonar" > sonar_cmd.txt
+                            else
+                                echo "项目未配置 SonarQube 插件，使用完整插件坐标"
+                                echo "SONAR_CMD=mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.1.2184:sonar" > sonar_cmd.txt
+                            fi
+                        """
+
+                        def sonarCmdFile = steps.readFile('sonar_cmd.txt')
+                        sonarCmd = sonarCmdFile.split('=')[1].trim()
+
+                        def sonarParams = [
+                                "sonar.projectKey=${projectName}-pr-${prNumber}",
+                                "sonar.projectName='${projectName} PR ${prNumber}'",
+                                "sonar.sources=${sonarSources}",
+                                "sonar.exclusions='${sonarExclusions}'",
+                                "sonar.host.url=${env.SONAR_URL}",
+                                "sonar.login=${env.SONAR_TOKEN}"
+                        ]
+
+                        // 企业版：使用完整的 PR 分析参数
+                        if (isPR) {
+                            sonarParams << "sonar.pullrequest.key=${prNumber}"
+                            sonarParams << "sonar.pullrequest.branch=${branchName}"
+                            sonarParams << "sonar.pullrequest.base=${targetBranch}"
+                            steps.echo "🔍 PR 分析：${branchName} -> ${targetBranch}"
+                        } else {
+                            // 分支构建：使用分支分析
+                            sonarParams << "sonar.branch.name=${branchName}"
+                        }
+
+                        // 构建完整的命令
+                        sonarParams.each { param ->
+                            sonarCmd += " -D${param}"
+                        }
+                        sonarCmd += " -s \${MAVEN_SETTINGS}"
+
+                        steps.sh """
+                            echo "执行 SonarQube 企业版扫描..."
+                            echo "使用命令: ${sonarCmd}"
+                            ${sonarCmd}
+                        """
+
+                        // 清理临时文件
+                        steps.sh "rm -f sonar_cmd.txt"
+
+                        // 企业版可以获取详细的质量门结果
+                        enterpriseResults.codeCoverage = 90  // 模拟企业版覆盖率
+                        enterpriseResults.qualityGateStatus = "PASSED"
+                    }
+                }
+            }
+        }
+
+        steps.echo "✅ SonarQube 企业版扫描完成"
+        return enterpriseResults
+    }
+
+    // 其他方法保持不变...
     def fastDependencyCheck(Boolean skip = false) {
         if (skip) {
             steps.echo "⏭️ 跳过依赖检查（配置为跳过此步骤）"
@@ -407,73 +504,6 @@ class SecurityTools implements Serializable {
         steps.echo "✅ 免费代码分析完成"
         return analysisResults
     }
-
-    // ========== 修改点4：企业版 SonarQube 扫描方法，返回结果 ==========
-    def runSonarQubeEnterpriseScan(String projectName, String branchName, boolean isPR, String prNumber, String targetBranch, String scanIntensity) {
-        steps.echo "运行 SonarQube 企业版扫描..."
-
-        def enterpriseResults = [:]
-
-        steps.withSonarQubeEnv('sonarqube') {
-            steps.withCredentials([steps.string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                steps.configFileProvider([steps.configFile(fileId: 'global-maven-settings', variable: 'MAVEN_SETTINGS')]) {
-                    steps.dir("${env.WORKSPACE}/${env.PROJECT_DIR}") {
-                        // 根据扫描强度调整参数
-                        def sonarExclusions = '**/test/**,**/target/**'
-                        def sonarSources = 'src/main/java'
-
-                        if (scanIntensity == 'fast') {
-                            sonarExclusions += ',**/*.md,**/*.json,**/*.xml'
-                            steps.echo "🔍 快速扫描模式：跳过文档和配置文件"
-                        } else if (scanIntensity == 'deep') {
-                            sonarSources += ',src/test/java'
-                            steps.echo "🔍 深度扫描模式：包含测试代码分析"
-                        }
-
-                        def sonarCmd = "mvn sonar:sonar"
-                        def sonarParams = [
-                                "sonar.projectKey=${projectName}-pr-${prNumber}",
-                                "sonar.projectName='${projectName} PR ${prNumber}'",
-                                "sonar.sources=${sonarSources}",
-                                "sonar.exclusions='${sonarExclusions}'",
-                                "sonar.host.url=${env.SONAR_URL}",
-                                "sonar.login=${env.SONAR_TOKEN}"
-                        ]
-
-                        // 企业版：使用完整的 PR 分析参数
-                        if (isPR) {
-                            sonarParams << "sonar.pullrequest.key=${prNumber}"
-                            sonarParams << "sonar.pullrequest.branch=${branchName}"
-                            sonarParams << "sonar.pullrequest.base=${targetBranch}"
-                            steps.echo "🔍 PR 分析：${branchName} -> ${targetBranch}"
-                        } else {
-                            // 分支构建：使用分支分析
-                            sonarParams << "sonar.branch.name=${branchName}"
-                        }
-
-                        // 构建完整的命令
-                        sonarParams.each { param ->
-                            sonarCmd += " -D${param}"
-                        }
-                        sonarCmd += " -s \${MAVEN_SETTINGS}"
-
-                        steps.sh """
-                            echo "执行 SonarQube 企业版扫描..."
-                            ${sonarCmd}
-                        """
-
-                        // 企业版可以获取详细的质量门结果
-                        enterpriseResults.codeCoverage = 90  // 模拟企业版覆盖率
-                        enterpriseResults.qualityGateStatus = "PASSED"
-                    }
-                }
-            }
-        }
-
-        steps.echo "✅ SonarQube 企业版扫描完成"
-        return enterpriseResults
-    }
-
 
     def dependencyCheck(Boolean skip = false) {
         if (skip) {
