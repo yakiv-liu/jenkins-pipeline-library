@@ -142,214 +142,99 @@ graph TB
     class ANSIBLE,PLAYBOOK,ROLLBACK deploy
 ```
 
-## 用户操作流程
+## 工作流程
 
 ```mermaid
-flowchart TD
-    Start([👨‍💻 开发者开始]) --> Login[🔐 登录 Jenkins]
-    Login --> Dashboard[📊 访问 Jenkins 仪表板]
+graph TD
+    A[代码提交] --> B[Webhook 触发]
+    B --> C[Jenkins Pipeline 启动]
+    C --> D[初始化阶段]
+    D --> E[代码检出]
+    E --> F[构建阶段]
+    F --> G[安全扫描阶段]
+    G --> H{质量门检查}
+    H -->|通过| I[部署阶段]
+    H -->|失败| J[标记为不稳定]
+    J --> I
+    I --> K{Staging 部署结果}
+    K -->|成功| L[部署 Pre-Prod]
+    K -->|失败| M[Staging 回滚]
+    L --> N{Pre-Prod 健康检查}
+    N -->|成功| O[部署 Prod]
+    N -->|失败| P[Pre-Prod 回滚]
+    O --> Q{Prod 健康检查}
+    Q -->|成功| R[部署成功]
+    Q -->|失败| S[Prod 回滚]
+    M --> T[构建失败]
+    P --> T
+    S --> T
+    R --> U[发送成功通知]
+    T --> V[发送失败通知]
+    U --> W[流程完成]
+    V --> X[流程终止]
     
-    Dashboard --> SelectJob[📋 选择 CI/CD 任务]
-    SelectJob --> JobDetail[📝 查看任务详情]
-    
-    JobDetail --> BuildNow[🚀 立即构建]
-    BuildNow --> Parameters[⚙️ 填写构建参数]
-    
-    subgraph Parameters [构建参数]
-        P1[项目名称]
-        P2[代码分支]
-        P3[部署环境]
-        P4[是否跳过依赖检查]
-    end
-    
-    Parameters --> Confirm[✅ 确认开始构建]
-    Confirm --> BuildProgress[⏳ 查看构建进度]
-    
-    BuildProgress --> MonitorStages[👀 监控各阶段状态]
-    
-    subgraph MonitorStages [监控构建阶段]
-        M1[🔨 构建阶段]
-        M2[🛡️ 安全扫描]
-        M3[🚀 部署过程]
-        M4[🔍 健康检查]
-    end
-    
-    MonitorStages --> BuildResult{📊 构建结果}
-    
-    BuildResult -->|成功| ViewDeployed[🌐 访问部署的应用]
-    BuildResult -->|失败| ViewLogs[📋 查看失败日志]
-    
-    ViewDeployed --> TestApp[🧪 测试应用功能]
-    TestApp --> ReportIssue[🐛 报告问题]
-    
-    ViewLogs --> AnalyzeError[🔍 分析错误原因]
-    AnalyzeError --> FixCode[🔧 修复代码]
-    FixCode --> NewBuild[🔄 重新触发构建]
-    
-    NewBuild --> BuildProgress
-    
-    ReportIssue --> CreateTicket[🎫 创建问题工单]
-    CreateTicket --> AssignFix[👨‍💻 分配修复任务]
-    
-    %% 运维人员流程
-    Dashboard --> OpsView[🔍 运维监控视图]
-    OpsView --> SystemHealth[❤️ 系统健康状态]
-    OpsView --> DeploymentHistory[📊 部署历史]
-    
-    DeploymentHistory --> RollbackAction{🔄 需要回滚?}
-    RollbackAction -->|是| ManualRollback[🎯 手动执行回滚]
-    RollbackAction -->|否| ContinueMonitor[👀 继续监控]
-    
-    ManualRollback --> SelectVersion[📋 选择回滚版本]
-    SelectVersion --> ConfirmRollback[✅ 确认回滚]
-    ConfirmRollback --> RollbackProgress[⏳ 监控回滚进度]
-    
-    RollbackProgress --> RollbackResult{🔄 回滚结果}
-    RollbackResult -->|成功| VerifyRecovery[✅ 验证服务恢复]
-    RollbackResult -->|失败| EmergencyFix[🚨 紧急修复]
-    
-    VerifyRecovery --> End([✅ 流程完成])
-    EmergencyFix --> End
-
-    %% 样式
-    classDef startEnd fill:#e3f2fd,stroke:#1565c0,rx:10px,ry:10px
-    classDef userAction fill:#f3e5f5,stroke:#7b1fa2
-    classDef decision fill:#e8f5e8,stroke:#2e7d32,rx:10px,ry:10px
-    classDef subgraph fill:#fff3e0,stroke:#ef6c00
-    classDef success fill:#c8e6c9,stroke:#2e7d32
-    classDef failure fill:#ffcdd2,stroke:#c62828
-    classDef opsAction fill:#e1f5fe,stroke:#0277bd
-
-    class Start,End startEnd
-    class Login,Dashboard,SelectJob,JobDetail,BuildNow,Confirm,BuildProgress,ViewDeployed,TestApp,ViewLogs,AnalyzeError,FixCode,NewBuild,ReportIssue,CreateTicket,AssignFix userAction
-    class BuildResult,RollbackAction,RollbackResult decision
-    class Parameters,MonitorStages subgraph
-    class ViewDeployed,TestApp,VerifyRecovery success
-    class ViewLogs,AnalyzeError,FixCode,EmergencyFix failure
-    class OpsView,SystemHealth,DeploymentHistory,ManualRollback,SelectVersion,ConfirmRollback,RollbackProgress,ContinueMonitor opsAction
+    F --> Y[记录构建信息]
+    I --> Z[记录部署状态]
+    M --> AA[记录回滚信息]
+    P --> AA
+    S --> AA
 ```
 
 ## 系统时序图
 
 ```mermaid
 sequenceDiagram
-    participant D as 开发者
-    participant G as Git仓库
-    participant JM as Jenkins Master
-    participant JS as Jenkins Slave
-    participant BT as BuildTools
-    participant ST as SecurityTools
-    participant DT as DeployTools
-    participant DBT as DatabaseTools
-    participant N as Nexus
-    participant H as Harbor
-    participant SQ as SonarQube
-    participant TV as Trivy
-    participant DB as 数据库
-    participant AE as Ansible Engine
-    participant STG as Staging环境
-    participant PRE as Pre-Prod环境
-    participant PRD as Prod环境
+    participant 👨‍💻 as 开发者
+    participant 📚 as Git仓库
+    participant ⚙️ as Jenkins Pipeline
+    participant 🛠️ as BuildTools
+    participant 🛡️ as SecurityTools
+    participant 🚀 as DeployTools
+    participant 🗄️ as DatabaseTools
+    participant 📦 as Nexus/Harbor
+    participant 🌐 as 目标环境
 
-    Note over D,PRD: 🚀 Phase 1: 代码提交与触发
+    Note over 👨‍💻,🌐: 🚀 Master 分支自动部署流程
+
+    👨‍💻->>📚: 📥 推送代码到 master 分支
+    📚->>⚙️: 🔔 Webhook 触发构建
+    ⚙️->>⚙️: 🔧 初始化配置和参数验证
     
-    D->>G: 1. git push origin master
-    G->>JM: 2. Webhook 触发构建
-    JM->>JM: 3. 解析 Jenkinsfile
-    JM->>JM: 4. 加载共享库配置
+    ⚙️->>🛠️: 📋 调用构建流程
+    🛠️->>📦: 📥 Maven 构建和依赖下载
+    🛠️->>🛠️: 🐳 Docker 镜像构建
+    🛠️->>🛡️: 🔒 Trivy 安全扫描
+    🛠️->>📦: 📤 推送镜像到 Harbor
     
-    Note over D,PRD: 🔨 Phase 2: 构建与安全扫描
+    ⚙️->>🛡️: 📊 并行安全扫描
+    🛡️->>🛡️: 📈 SonarQube 代码质量分析
+    🛡️->>🛡️: 🔍 依赖安全检查（可选）
     
-    JM->>JS: 5. 分配构建任务到 Slave
-    JS->>BT: 6. 调用 BuildTools.mavenBuild()
-    BT->>N: 7. 下载 Maven 依赖
-    N-->>BT: 8. 返回依赖包
-    BT->>BT: 9. Maven 编译打包
-    BT->>BT: 10. Docker 镜像构建
-    BT->>H: 11. 推送镜像到 Harbor
-    H-->>BT: 12. 镜像推送成功
+    ⚙️->>🗄️: 💾 记录构建信息到数据库
     
-    par 并行安全扫描
-        JS->>ST: 13. 调用 SecurityTools.fastSonarScan()
-        ST->>SQ: 14. 执行代码质量分析
-        SQ-->>ST: 15. 返回分析结果
+    ⚙️->>⚙️: ⏳ 等待质量门结果
+    
+    loop 🔄 顺序部署环境
+        ⚙️->>🚀: 🎯 部署到环境
+        🚀->>🗄️: 📝 记录部署开始
+        🚀->>🌐: 🚀 执行 Ansible 部署
+        🚀->>🌐: 🔍 健康检查
         
-        JS->>ST: 16. 调用 SecurityTools 进行 Trivy 扫描
-        ST->>TV: 17. 扫描 Docker 镜像安全
-        TV-->>ST: 18. 返回安全报告
-        
-        JS->>ST: 19. 执行依赖安全检查
-        ST->>ST: 20. OWASP 依赖扫描
-    end
-    
-    JS->>DBT: 21. 调用 DatabaseTools.recordBuild()
-    DBT->>DB: 22. 记录构建信息
-    DB-->>DBT: 23. 数据保存成功
-    
-    Note over D,PRD: 📊 Phase 3: 质量门检查
-    
-    JM->>JM: 24. 等待质量门结果
-    SQ->>JM: 25. 发送质量门状态
-    JM->>JM: 26. 评估质量门
-    
-    alt 质量门通过
-        JM->>JM: 27. 继续部署流程
-    else 质量门失败
-        JM->>JM: 28. 标记构建为不稳定
-        JM->>JM: 29. 继续部署（可配置）
-    end
-    
-    Note over D,PRD: 🚀 Phase 4: 顺序部署
-    
-    loop 每个环境 [Staging, Pre-Prod, Prod]
-        JM->>DT: 30. 调用 DeployTools.deployToEnvironmentWithAutoRollbackAndStatus()
-        DT->>DBT: 31. 记录部署开始状态
-        DBT->>DB: 32. 更新部署状态为 IN_PROGRESS
-        DB-->>DBT: 33. 状态更新成功
-        
-        DT->>DT: 34. 准备 Ansible 环境
-        DT->>AE: 35. 执行部署 Playbook
-        AE->>STG: 36. 部署应用到目标环境
-        STG-->>AE: 37. 部署完成
-        
-        DT->>DT: 38. 执行健康检查
-        STG-->>DT: 39. 健康检查通过
-        
-        alt 部署成功
-            DT->>DBT: 40. 更新部署状态为 SUCCESS
-            DBT->>DB: 41. 记录部署成功
-            DB-->>DBT: 42. 状态更新成功
-        else 部署失败
-            DT->>DBT: 43. 更新部署状态为 FAILED
-            DBT->>DB: 44. 记录部署失败
-            
-            DT->>DBT: 45. 查询上一个成功版本
-            DBT->>DB: 46. 获取可回滚版本
-            DB-->>DBT: 47. 返回回滚版本信息
-            
-            DT->>AE: 48. 执行回滚 Playbook
-            AE->>STG: 49. 回滚到上一个版本
-            STG-->>AE: 50. 回滚完成
-            
-            DT->>DBT: 51. 记录回滚信息
-            DBT->>DB: 52. 保存回滚记录
-            DB-->>DBT: 53. 记录保存成功
-            
-            DT-->>JM: 54. 返回部署失败和回滚状态
-            JM->>JM: 55. 跳过后续环境部署
-            break
+        alt ✅ 部署成功
+            🚀->>🗄️: ✅ 更新部署状态为成功
+        else ❌ 部署失败
+            🚀->>🗄️: ❌ 更新部署状态为失败
+            🚀->>🗄️: 🔍 查询上一个成功版本
+            🚀->>🌐: 🔙 执行自动回滚
+            🚀->>🗄️: 📝 记录回滚信息
+            🚀->>⚙️: 🚨 返回部署失败状态
+            ⚙️->>⚙️: ⏹️ 跳过后续环境部署
         end
     end
     
-    Note over D,PRD: 📧 Phase 5: 结果通知
+    ⚙️->>👨‍💻: 📧 发送构建结果通知
     
-    alt 所有环境部署成功
-        JM->>JM: 56. 发送成功通知
-    else 有环境部署失败
-        JM->>JM: 57. 发送失败通知（包含回滚信息）
-    end
-    
-    JM->>D: 58. 邮件通知构建结果
+    Note over 👨‍💻,🌐: 🎉 流程完成
 ```
 
 ## 数据库设计
